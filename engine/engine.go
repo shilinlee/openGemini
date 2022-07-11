@@ -1288,7 +1288,7 @@ func (e *Engine) TagValues(db string, ptIDs []uint32, tagKeys map[string][][]byt
 }
 
 func appendValuesToMap(results map[string][][]string, name string, values [][]string) {
-        if _, ok := results[name]; !ok {
+	if _, ok := results[name]; !ok {
 		results[name] = make([][]string, len(values))
 	}
 	for i := 0; i < len(values); i++ {

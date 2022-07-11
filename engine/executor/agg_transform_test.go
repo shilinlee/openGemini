@@ -4394,6 +4394,87 @@ func buildBenchChunks(chunkCount, chunkSize, tagPerChunk, intervalPerChunk int) 
 	return chunkList
 }
 
+func buildDstRowDataTypeHeimdallDetect() hybridqp.RowDataType {
+	schema := hybridqp.NewRowDataTypeImpl(
+		influxql.VarRef{Val: "heimdall_detect(\"age\")", Type: influxql.Float},
+		influxql.VarRef{Val: "heimdall_detect(\"height\")", Type: influxql.Integer},
+	)
+	return schema
+}
+
+func buildDstChunkHeimdallDetect() []executor.Chunk {
+	inChunks := make([]executor.Chunk, 0, 2)
+	rowDataType := buildDstRowDataTypeHeimdallDetect()
+
+	b := executor.NewChunkBuilder(rowDataType)
+
+	// first chunk
+	inCk1 := b.NewChunk("mst")
+	inCk1.AppendTagsAndIndexes(
+		[]executor.ChunkTags{
+			*ParseChunkTags("country="), *ParseChunkTags("country=american"),
+			*ParseChunkTags("country=canada"), *ParseChunkTags("country=china")},
+		[]int{0, 1, 3, 5})
+	inCk1.AppendIntervalIndex([]int{0, 1, 3, 5}...)
+	inCk1.AppendTime([]int64{10, 1, 6, 4, 9, 0}...)
+
+	inCk1.Column(0).AppendFloatValues([]float64{102, 20.5, 52.7, 35, 60.8, 12.3}...)
+	inCk1.Column(0).AppendManyNotNil(6)
+
+	inCk1.Column(1).AppendIntegerValues([]int64{191, 80, 153, 138, 180, 70}...)
+	inCk1.Column(1).AppendManyNotNil(6)
+
+	// second chunk
+	inCk2 := b.NewChunk("mst")
+	inCk2.AppendTagsAndIndexes(
+		[]executor.ChunkTags{
+			*ParseChunkTags("country=china"), *ParseChunkTags("country=germany"),
+			*ParseChunkTags("country=japan")},
+		[]int{0, 2, 4})
+	inCk2.AppendIntervalIndex([]int{0, 2, 4}...)
+	inCk2.AppendTime([]int64{5, 11, 2, 7, 3, 8}...)
+
+	inCk2.Column(0).AppendFloatValues([]float64{48.8, 123, 3.4, 28.3, 30}...)
+	inCk2.Column(0).AppendNilsV2(true, true, true, true, true, false)
+
+	inCk2.Column(1).AppendIntegerValues([]int64{149, 203, 90, 121, 179}...)
+	inCk2.Column(1).AppendNilsV2(true, true, true, false, true, true)
+
+	inChunks = append(inChunks, inCk1, inCk2)
+
+	return inChunks
+}
+
+// TODO: to modify it to be consistent with the result of HeimdallDetect processing
+func TestStreamAggregateTransformHeimdallDetect(t *testing.T) {
+	inChunks := buildComInChunk()
+	dstChunks := buildDstChunkHeimdallDetect()
+
+	exprOpt := []hybridqp.ExprOptions{
+		{
+			Expr: &influxql.Call{Name: "heimdall_detect", Args: []influxql.Expr{hybridqp.MustParseExpr("age")}},
+			Ref:  influxql.VarRef{Val: `heimdall_detect("age")`, Type: influxql.Integer},
+		},
+		{
+			Expr: &influxql.Call{Name: "heimdall_detect", Args: []influxql.Expr{hybridqp.MustParseExpr("height")}},
+			Ref:  influxql.VarRef{Val: `heimdall_detect("height")`, Type: influxql.Float},
+		},
+	}
+
+	opt := query.ProcessorOptions{
+		Dimensions: []string{"country"},
+		Interval:   hybridqp.Interval{Duration: 20 * time.Nanosecond},
+		ChunkSize:  6,
+	}
+
+	testStreamAggregateTransformBase(
+		t,
+		inChunks, dstChunks,
+		buildComRowDataType(), buildDstRowDataTypeHeimdallDetect(),
+		exprOpt, opt,
+	)
+}
+
 func TestAggregateTransform_ChunkCount_ChunkSize_SeriesCount_IntervalCount_1000_1000_1_10000(t *testing.T) {
 	chunkCount, ChunkSize, tagPerChunk, intervalPerChunk := 1000, 1000, 1, 100
 	chunks := buildBenchChunks(chunkCount, ChunkSize, tagPerChunk, intervalPerChunk)

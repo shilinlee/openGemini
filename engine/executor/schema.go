@@ -35,6 +35,18 @@ var NotAggOnSeries = map[string]bool{
 	"sliding_window": true,
 }
 
+func init() {
+	addUDAFNotAggOnSeries()
+}
+
+func addUDAFNotAggOnSeries() {
+	// UDAF can not sink into the series
+	udafRes := op.GetOpFactory().GetUDAFOpNames()
+	for _, udafName := range udafRes {
+		NotAggOnSeries[udafName] = true
+	}
+}
+
 var DefaultTypeMapper = influxql.MultiTypeMapper(
 	op.TypeMapper{},
 	query.MathTypeMapper{},
@@ -795,6 +807,12 @@ func (qs *QuerySchema) CanAggPushDown() bool {
 }
 
 func (qs *QuerySchema) ContainSeriesIgnoreCall() bool {
+	for _, call := range qs.calls {
+		// UDAF can not sink into the series
+		if op.IsUDAFOp(call) {
+			return true
+		}
+	}
 	return false
 }
 

@@ -103,3 +103,49 @@ func (op *CountOp) Compile(call *influxql.Call) error {
 	}
 	return nil
 }
+
+type HeimdallDetectOp struct {
+	BaseOp
+	factory RoutineFactory
+}
+
+func NewHeimdallDetectOp(factory RoutineFactory) *HeimdallDetectOp {
+	op := &HeimdallDetectOp{
+		factory: factory,
+	}
+	op.init(op, "heimdall_detect", HEIMDALL_DETECT_OP, 1)
+	return op
+}
+
+func (op *HeimdallDetectOp) Clone() Op {
+	clone := &HeimdallDetectOp{}
+	clone.init(clone, op.name, op.id, op.arity)
+	return clone
+}
+
+func (op *HeimdallDetectOp) Factory() RoutineFactory {
+	return op.factory
+}
+
+func (op *HeimdallDetectOp) CanPushDownSeries() bool {
+	return false
+}
+
+func (op *HeimdallDetectOp) Type(args ...influxql.DataType) (influxql.DataType, error) {
+	if op.arity != len(args) {
+		return influxql.Unknown, fmt.Errorf("invalid arity of %s operator, expected %d, got %d", op.name, op.arity, len(args))
+	}
+	if args[0] == influxql.String || args[0] == influxql.Boolean {
+		return influxql.Unknown, fmt.Errorf("unsupported type %v or %v of %s operator", influxql.String, influxql.Boolean, op.name)
+	}
+
+	return args[0], nil
+}
+
+func (op *HeimdallDetectOp) Compile(call *influxql.Call) error {
+	nargs := len(call.Args)
+	if nargs != op.arity {
+		return fmt.Errorf("invalid number of arguments for %s, expected %d, got %d", op.name, op.arity, nargs)
+	}
+	return nil
+}

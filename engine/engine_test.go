@@ -518,7 +518,7 @@ func TestEngine_TagValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer eng.Close()
- 
+
 	msNames := []string{"cpu"}
 	tm := time.Now().Truncate(time.Second)
 	rows, _, _ := GenDataRecord(msNames, 10, 200, time.Second, tm, false, true, false)
@@ -529,7 +529,7 @@ func TestEngine_TagValues(t *testing.T) {
 	dbInfo := eng.DBPartitions["db0"][0]
 	idx := dbInfo.indexBuilder[659].GetPrimaryIndex().(*tsi.MergeSetIndex)
 	idx.DebugFlush()
- 
+
 	tagsets, err := eng.TagValues("db0", []uint32{0}, map[string][][]byte{
 		msNames[0]: {[]byte("tagkey1")},
 	}, nil)
