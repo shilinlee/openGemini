@@ -25,6 +25,8 @@ FAILPOINT_DISABLE := find $$PWD/ -type d | grep -vE "(\.git|\.github|\.tests)" |
 PACKAGE_LIST_OPEN_GEMINI_TESTS  := go list ./... | grep -vE "tests|open_src\/github.com\/hashicorp"
 PACKAGES_OPEN_GEMINI_TESTS ?= $$($(PACKAGE_LIST_OPEN_GEMINI_TESTS))
 
+.PHONY: go_build style_check gotest IT buildsucc
+
 default: gotest
 
 all: go_build buildsucc
@@ -54,9 +56,8 @@ failpoint-disable:
 gotest: install_failpoint failpoint-enable
 	@echo "running gotest begin."
 	index=0; for s in $(PACKAGES_OPEN_GEMINI_TESTS); do index=$$(($$index+1)); if ! $(GOTEST) -failfast -short -v -count 1 -p 1 -timeout 10m -coverprofile=coverage_$$index.txt $$s; then $(FAILPOINT_DISABLE); exit 1; fi; done
-	#$(GOTEST) -v -count 1 -p 1 -timeout 20m -cover $(PACKAGES_OPEN_GEMINI_TESTS) -coverprofile=coverage.out > gotest.log || { $(FAILPOINT_DISABLE); cat gotest.log; exit 1; }
 	@$(FAILPOINT_DISABLE)
 
 IT:
 	@echo "running integration test begin."
-	URL=http://127.0.0.1:8086 $(GO) test -mod=mod -test.parallel 1 -timeout 10m ./tests -v GOCACHE=off -args "normal"
+	URL=http://127.0.0.1:8086 $(GOTEST)-mod=mod -test.parallel 1 -timeout 10m ./tests -v GOCACHE=off -args "normal"
