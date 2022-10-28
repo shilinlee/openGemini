@@ -202,3 +202,12 @@ const (
 const (
 	WatchFileTimeout = 7001
 )
+
+// heimdall service
+const (
+	DtypeNotSupport    = 8001
+	DtypeNotMatch      = 8002
+	NumOfFieldNotEqual = 8003
+	TimestampNotFound  = 8004
+	TypeAssertFail     = 8005
+)

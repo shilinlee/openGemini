@@ -203,4 +203,11 @@ var messageMap = map[Errno]*Message{
 
 	// monitoring and statistics
 	WatchFileTimeout: newWarnMessage("watch file timeout", ModuleStat),
+
+	// heimdall error codes
+	DtypeNotSupport:    newNoticeMessage("only support integer\\float type", ModuleHeimdall),
+	DtypeNotMatch:      newNoticeMessage("dtype type not match, expect:%v, got:%v", ModuleHeimdall),
+	NumOfFieldNotEqual: newNoticeMessage("number of field not equal between input and output", ModuleHeimdall),
+	TimestampNotFound:  newNoticeMessage("time not found in response", ModuleHeimdall),
+	TypeAssertFail:     newNoticeMessage("type assert fail, expect %v", ModuleHeimdall),
 }
