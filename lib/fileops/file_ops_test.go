@@ -57,35 +57,37 @@ func TestGlob(t *testing.T) {
 		_ = f.Close()
 	}
 
-	tsmfile := files[0:2]
-	sort.Strings(tsmfile)
+	tsmfiles := files[0:2]
+	sort.Strings(tsmfiles)
 	tsmPattern := path.Join(tmpDir, "*.tsm")
 	tmpFiles, err := Glob(tsmPattern)
+	sort.Strings(tmpFiles)
 	if err != nil {
 		t.Fatalf("Glob(%s) failed: %q", tsmPattern, err.Error())
 	}
-	if len(tmpFiles) != len(tsmfile) {
+	if len(tmpFiles) != len(tsmfiles) {
 		t.Fatalf("Glob(%s) failed", tsmPattern)
 	}
 	for i := 0; i < len(tmpFiles); i++ {
-		if path.Join(tmpDir, tsmfile[i]) != tmpFiles[i] {
-			t.Fatalf("Glob(%s) failed: expected(%s) but(%s)", tsmPattern, tsmfile[i], tmpFiles[i])
+		if path.Join(tmpDir, tsmfiles[i]) != tmpFiles[i] {
+			t.Fatalf("Glob(%s) failed: expected(%s) but(%s)", tsmPattern, tsmfiles[i], tmpFiles[i])
 		}
 	}
 
-	walfile := files[5:8]
-	sort.Strings(walfile)
+	walfiles := files[5:8]
+	sort.Strings(walfiles)
 	walPattern := path.Join(tmpDir, "_*.wal")
 	walFiles, err := Glob(walPattern)
+	sort.Strings(walFiles)
 	if err != nil {
 		t.Fatalf("Glob(%s) failed: %q", walPattern, err.Error())
 	}
-	if len(walFiles) != len(walfile) {
+	if len(walFiles) != len(walfiles) {
 		t.Fatalf("Glob(%s) failed", walPattern)
 	}
 	for i := 0; i < len(walFiles); i++ {
-		if path.Join(tmpDir, walfile[i]) != walFiles[i] {
-			t.Fatalf("Glob(%s) failed: expected(%s) but(%s)", walPattern, walfile[i], tmpFiles[i])
+		if path.Join(tmpDir, walfiles[i]) != walFiles[i] {
+			t.Fatalf("Glob(%s) failed: expected(%s) but(%s)", walPattern, walfiles[i], tmpFiles[i])
 		}
 	}
 }

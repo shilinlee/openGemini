@@ -14,17 +14,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package cmd
 
 import (
-	"testing"
+	"fmt"
 
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"github.com/spf13/cobra"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+func init() {
+	rootCmd.AddCommand(executeCmd)
+}
+
+var executeCmd = &cobra.Command{
+	Use:   "execute",
+	Short: "Execute a query",
+	Long:  `Execute a query`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := connectCLI(); err != nil {
+			return err
+		}
+		if len(args) > 1 {
+			return fmt.Errorf("only one query can be specified")
+		} else if len(args) == 0 {
+			return fmt.Errorf("empty query is not allowed")
+		} else {
+			return cli.Execute(args[0])
+		}
+	},
 }

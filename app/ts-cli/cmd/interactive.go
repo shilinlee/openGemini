@@ -14,17 +14,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package cmd
 
 import (
-	"testing"
-
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"github.com/spf13/cobra"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+func init() {
+	rootCmd.AddCommand(interactiveCmd)
 }
+
+var (
+	interactiveCmd = &cobra.Command{
+		Use:   "interactive",
+		Short: "Work in interactive mode",
+		Long:  `Work in interactive mode`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := connectCLI(); err != nil {
+				return err
+			}
+			if err := cli.Run(); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+)

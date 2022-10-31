@@ -21,7 +21,7 @@ openGemini是一个开源的时序数据库，可广泛应用于物联网、车�
   - 实时异常检测和预测
 - 时序生态兼容
   - 完全兼容InfluxDB line protocol 和 Influxql
-  - 无缝集成现有InfluxDB工具链
+  - 兼容现有InfluxDB工具链
   - 支持Prometheus远程数据存储
 - 分布式  
   - 提供了水平扩展能力，支持数百节点集群规模
@@ -54,6 +54,8 @@ openGemini目前暂时只支持Linux操作系统，无缝支持InfluxDB生态工
 ## 快速开始
 
 如需更详细的介绍，请访问官网[用户指南](http://www.openGemini.org/docs)
+
+相关编译和部署详细视频教程，[点击访问](https://www.bilibili.com/video/BV1Km4y1P7oB/?spm_id_from=333.999.0.0&vd_source=ea61c9c8b95b08ba907a4c9b78741732)
 
 本章节主要包含以下内容：
 
@@ -107,7 +109,7 @@ export GOSUMDB=off
 
 ```
 > ls build
-ts-meta  ts-server  ts-sql  ts-store
+ts-cli  ts-meta  ts-monitor  ts-server  ts-sql  ts-store  
 ```
 
 ### 配置
@@ -116,7 +118,7 @@ ts-meta  ts-server  ts-sql  ts-store
 
 ### 运行openGemini
 
-单机运行，数据目录默认为/opt/tsdb，部分操作系统需要提前创建好/opt/tsdb目录。如果您想切换成其他目录，也可以在singenode.conf中进行修改。
+单机运行，数据目录默认为/tmp/openGemini，使用时请修改单机版的配置文件openGemini.single.conf，更换目录。
 
 ```
 > cd openGemini
@@ -128,25 +130,20 @@ ts-meta  ts-server  ts-sql  ts-store
 
 #### 使用openGemini
 
-使用influx客户端连接openGemini, [点击下载influx客户端](https://dl.influxdata.com/influxdb/releases/influxdb-1.8.10_linux_amd64.tar.gz)
+使用客户端ts-cli连接openGemini
 
 ```
-> influx -host 127.0.0.1 -port 8086
+> ts-cli -host 127.0.0.1 -port 8086
 ```
 
 登陆成功后显示如下信息
 
 ```sh
-> influx -host 127.0.0.1 -port 8086
-WARN: Connected to http://127.0.0.1:8086, but found no server version.
-Are you sure an InfluxDB server is listening at the given address?
-InfluxDB shell version: 1.8.3
-> 
+> ts-cli -host 127.0.0.1 -port 8086
+openGemini CLI 0.1.0 (rev-revision)
+Please use 'quit', 'exit' or 'Ctrl-D' to exit this program
+>
 ```
-
-#### Demo
-
-![demo](images/demo.gif)
 
 创建数据库
 
@@ -174,7 +171,7 @@ openGemini支持三种方式创建measurement数据表
 数据Schemaless写入(样例)
 
 ```
-> insert sensor,farmID="001",device="110" sensorID="s20",value=50.98
+> insert sensor,farmID=f1,deviceID=d0 sensorID=s20,value=50.98
 ```
 
 数据查询(样例)
@@ -182,14 +179,18 @@ openGemini支持三种方式创建measurement数据表
 ```
 > select * from sensor
 name: sensor
-time                device   farmID sensorID value
-----                -------- ------ -------- -----
-1657959880895515464 "110"    "001"  s20      50.89
++---------------------+----------+--------+----------+-------+
+| time                | deviceID | farmID | sensorID | value |
++---------------------+----------+--------+----------+-------+
+| 1657959880895515464 | d0       | f1     | s20      | 50.98 |
++---------------------+----------+--------+----------+-------+
+5 columns,1 rows in set
+Elapsed: 7.723332ms  
 ```
 
 ## 加入贡献
 
-[贡献指南]()
+[贡献指南](./CONTRIBUTION_CN.md)
 
 ## 联系我们
 
@@ -205,7 +206,7 @@ time                device   farmID sensorID value
 
 4. [Slack](https://join.slack.com/t/huawei-ipz9493/shared_invite/zt-1bvxs3s0i-h0BzP7ibpWfqmpJO2a4iKw)
 
-5. [Twitter]()
+5. [Twitter](https://twitter.com/openGemini)
 
 ## License
 

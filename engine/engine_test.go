@@ -522,15 +522,12 @@ func TestEngine_TagValues(t *testing.T) {
 	msNames := []string{"cpu"}
 	tm := time.Now().Truncate(time.Second)
 	rows, _, _ := GenDataRecord(msNames, 10, 200, time.Second, tm, false, true, false)
- 
-	if err := eng.WriteRows("db0", "rp0", 0, 1, rows, nil); err != nil {
+
+	if err = eng.WriteRows("db0", "rp0", 0, 1, rows, nil); err != nil {
 		t.Fatal(err)
 	}
 	dbInfo := eng.DBPartitions["db0"][0]
-	idx, ok := dbInfo.indexBuilder[659].GetPrimaryIndex().(*tsi.MergeSetIndex)
-	if !ok {
-		t.Fatal()
-	}
+	idx := dbInfo.indexBuilder[659].GetPrimaryIndex().(*tsi.MergeSetIndex)
 	idx.DebugFlush()
  
 	tagsets, err := eng.TagValues("db0", []uint32{0}, map[string][][]byte{

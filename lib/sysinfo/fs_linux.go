@@ -14,17 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package sysinfo
 
 import (
-	"testing"
-
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"os"
+	"syscall"
+	"time"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+func CreateTime(name string) (*time.Time, error) {
+	fi, err := os.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+
+	st := fi.Sys().(*syscall.Stat_t)
+	tm := time.Unix(int64(st.Ctim.Sec), int64(st.Ctim.Nsec))
+	return &tm, nil
 }

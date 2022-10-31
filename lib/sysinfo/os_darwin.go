@@ -14,17 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package sysinfo
 
 import (
-	"testing"
+	"fmt"
 
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"golang.org/x/sys/unix"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+const (
+	HW_MEMSIZE_MIB = "hw.memsize"
+)
+
+func TotalMemory() (uint64, error) {
+	ms, err := unix.SysctlUint64(HW_MEMSIZE_MIB)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get total memory: %w", err)
+	}
+	return ms, nil
 }

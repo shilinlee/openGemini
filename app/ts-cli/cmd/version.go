@@ -14,17 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package cmd
 
 import (
-	"testing"
+	"fmt"
 
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"github.com/spf13/cobra"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+func init() {
+	rootCmd.AddCommand(versionCmd)
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version of openGemini CLI",
+	Long: `The version of openGemini CLI. Higher
+version of openGemini CLI is compatible with lower
+ version of open-Gemini.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("openGemini CLI v0.0.1 - HEAD")
+	},
 }

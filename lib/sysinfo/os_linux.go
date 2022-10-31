@@ -14,17 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package sysinfo
 
 import (
-	"testing"
-
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"syscall"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+func TotalMemory() (uint64, error) {
+	var si syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&si); err != nil {
+		return 0, err
+	}
+	return uint64(si.Totalram) * uint64(si.Unit), nil
 }

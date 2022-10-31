@@ -14,17 +14,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cpu_test
+package geminicli
 
 import (
-	"testing"
-
-	"github.com/openGemini/openGemini/lib/cpu"
-	"github.com/stretchr/testify/assert"
+	"github.com/c-bata/go-prompt"
 )
 
-func TestCpuNum(t *testing.T) {
-	cpu.SetCpuNum(10)
-	cpu.SetCpuNum(-1)
-	assert.Equal(t, 10, cpu.GetCpuNum())
+type Completer struct {
+}
+
+func NewCompleter() *Completer {
+	return &Completer{}
+}
+
+func (c *Completer) completer(d prompt.Document) []prompt.Suggest {
+	if d.TextBeforeCursor() == "" {
+		return []prompt.Suggest{}
+	}
+
+	w := d.GetWordBeforeCursor()
+	if w == " " {
+		return []prompt.Suggest{}
+	}
+
+	return c.argumentsCompleter(d)
 }
