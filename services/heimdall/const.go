@@ -15,6 +15,8 @@ limitations under the License.
 */
 package heimdall
 
+import "time"
+
 type internalTagKey string // distingush data tag and meta-info tag in record
 
 const (
@@ -79,4 +81,11 @@ type queryMode string
 const (
 	NormalQuery     queryMode = "0"
 	ContinuousQuery queryMode = "1"
+)
+
+const (
+	maxRespBufSize    = 1000
+	chanBufferSize    = 100
+	getCliTimeout     = 2 * time.Second
+	connCheckInterval = 5 * time.Second
 )

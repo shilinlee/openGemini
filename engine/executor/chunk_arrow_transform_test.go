@@ -7,7 +7,6 @@ import (
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/services/heimdall"
@@ -254,31 +253,6 @@ func isIntegerColumnEqual(cCol Column, rCol *array.Int64) bool {
 	return true
 }
 
-func buildNumericRecord() array.Record {
-	metaKeys := []string{"t", string(heimdall.AnomalyNum)}
-	metaVals := []string{"1", "1"}
-	metaData := arrow.NewMetadata(metaKeys, metaVals)
-
-	fields := []arrow.Field{
-		{Name: "int", Type: arrow.PrimitiveTypes.Int64},
-		{Name: string(heimdall.AnomalyLevel), Type: arrow.PrimitiveTypes.Float64},
-		{Name: string(heimdall.DataTime), Type: arrow.PrimitiveTypes.Int64}, // timestamp must store at last column
-	}
-
-	schema := arrow.NewSchema(fields, &metaData)
-	pool := memory.NewGoAllocator()
-	b := array.NewRecordBuilder(pool, schema)
-	defer b.Release()
-
-	valid := []bool{true, true, true, true}
-	b.Field(0).(*array.Int64Builder).AppendValues([]int64{0, 1, 2, 3}, valid)
-	b.Field(1).(*array.Float64Builder).AppendValues([]float64{0, 1.0, 2.0, 3.0}, valid)
-	b.Field(2).(*array.Int64Builder).AppendValues([]int64{0, 1, 2, 3}, valid)
-
-	rec := b.NewRecord()
-	return rec
-}
-
 func Test_chunkToArrowRecord(t *testing.T) {
 	c := buildNumericChunk()
 	recs, err := chunkToArrowRecords(c, "algo", "xx.conf", "detect", "123")
@@ -291,7 +265,7 @@ func Test_chunkToArrowRecord(t *testing.T) {
 }
 
 func Test_arrowRecordToChunk(t *testing.T) {
-	rec := buildNumericRecord()
+	rec := heimdall.BuildNumericRecord()
 	baseSchema := rec.Schema()
 	row, err := buildChunkSchema(baseSchema)
 	if err != nil {

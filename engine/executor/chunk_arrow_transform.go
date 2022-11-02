@@ -31,7 +31,7 @@ import (
 )
 
 // must release record after use
-func chunkToArrowRecords(c Chunk, algo, cfg, typeOfProcess, taskId string) ([]array.Record, error) {
+func chunkToArrowRecords(c Chunk, algo, cfg, typeOfProcess, taskId string) ([]array.Record, *errno.Error) {
 	var ret []array.Record
 
 	aFields, err := buildRecordField(c)
@@ -104,7 +104,7 @@ func buildRecordMetaData(c ChunkTags, algo, cfg, typeOfProcess, taskId string) a
 	return metaData
 }
 
-func buildRecordField(c Chunk) ([]arrow.Field, error) {
+func buildRecordField(c Chunk) ([]arrow.Field, *errno.Error) {
 	rdt := c.RowDataType()
 	varRefs := rdt.MakeRefs()
 	aFields := make([]arrow.Field, c.NumberOfCols()+1) // add 1 for timestamp
@@ -212,7 +212,7 @@ func appendArrowInt64(b *array.RecordBuilder, col Column, fieldIndex, seriesStar
 	}
 }
 
-func buildChunkSchema(schema *arrow.Schema) (*hybridqp.RowDataTypeImpl, error) {
+func buildChunkSchema(schema *arrow.Schema) (*hybridqp.RowDataTypeImpl, *errno.Error) {
 	varRefs := make([]influxql.VarRef, len(schema.Fields())-1) // minus 1 for timestamp
 	idx := 0
 	for _, f := range schema.Fields() {
@@ -233,12 +233,12 @@ func buildChunkSchema(schema *arrow.Schema) (*hybridqp.RowDataTypeImpl, error) {
 	return row, nil
 }
 
-func copyArrowRecordToChunk(r array.Record, c Chunk, fields map[string]struct{}) error {
+func copyArrowRecordToChunk(r array.Record, c Chunk, fields map[string]struct{}) *errno.Error {
 	// check errInfo, if exist, just return it
 	metaData := r.Schema().Metadata()
 	errInfoIdx := metaData.FindKey(string(heimdall.ErrInfo))
 	if errInfoIdx != -1 {
-		return fmt.Errorf(metaData.Values()[errInfoIdx])
+		return errno.NewThirdParty(fmt.Errorf(metaData.Values()[errInfoIdx]), errno.ModuleHeimdall)
 	}
 
 	// check number of anomaly
@@ -338,7 +338,7 @@ func buildChunkTagsWithFilter(metaData arrow.Metadata) *ChunkTags {
 	return NewChunkTags(newTags, validKeys)
 }
 
-func getTimestamp(r array.Record) (*array.Int64, error) {
+func getTimestamp(r array.Record) (*array.Int64, *errno.Error) {
 	timeFieldIdx := r.Schema().FieldIndices(string(heimdall.DataTime))
 	if len(timeFieldIdx) != 1 {
 		return nil, errno.NewError(errno.TimestampNotFound)
@@ -350,7 +350,7 @@ func getTimestamp(r array.Record) (*array.Int64, error) {
 	return rTime, nil
 }
 
-func copyRecordToChunk(r array.Record, c Chunk, fields map[string]struct{}) error {
+func copyRecordToChunk(r array.Record, c Chunk, fields map[string]struct{}) *errno.Error {
 	schema := r.Schema()
 	idx := 0
 	for j, rCol := range r.Columns() {
@@ -391,7 +391,7 @@ func copyRecordToChunk(r array.Record, c Chunk, fields map[string]struct{}) erro
 	return nil
 }
 
-func copyChunkToRecord(b *array.RecordBuilder, c Chunk, seriesStart, seriesEnd int) error {
+func copyChunkToRecord(b *array.RecordBuilder, c Chunk, seriesStart, seriesEnd int) *errno.Error {
 	for i, col := range c.Columns() {
 		switch col.DataType() {
 		case influxql.Float:
