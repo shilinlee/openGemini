@@ -318,6 +318,10 @@ func (r *AggPushdownToExchangeRule) OnMatch(call *OptRuleCall) {
 		break
 	}
 
+	if exchange.Schema().HasHeimdallCall() && !exchange.Schema().Options().IsGroupByAllDims() {
+		return
+	}
+
 	if vertex, ok := call.planner.Vertex(exchange); ok {
 		builder := NewLogicalPlanBuilderImpl(exchange.Schema())
 		node, err := builder.CreateAggregate(vertex)
@@ -390,6 +394,10 @@ func (r *AggPushdownToReaderRule) OnMatch(call *OptRuleCall) {
 	}
 
 	if reader.Schema().MatchPreAgg() {
+		return
+	}
+
+	if reader.schema.HasHeimdallCall() && !reader.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -546,6 +554,10 @@ func (r *AggSpreadToExchangeRule) OnMatch(call *OptRuleCall) {
 	if !agg.Schema().CanCallsPushdown() {
 		return
 	}
+	if agg.schema.HasHeimdallCall() {
+		return
+	}
+
 	clone, ok := agg.Clone().(*LogicalAggregate)
 	if !ok {
 		logger.GetLogger().Warn("AggSpreadToReaderRule OnMatch failed, after clone isn't *LogicalAggregate")
@@ -620,6 +632,10 @@ func (r *AggSpreadToSortAppendRule) OnMatch(call *OptRuleCall) {
 		return
 	}
 
+	if agg.schema.HasHeimdallCall() && !agg.Schema().Options().IsGroupByAllDims() {
+		return
+	}
+
 	clone, ok := agg.Clone().(*LogicalAggregate)
 	if !ok {
 		logger.GetLogger().Warn("AggSpreadToReaderRule OnMatch failed, after clone isn't *LogicalAggregate")
@@ -689,6 +705,10 @@ func (r *AggSpreadToReaderRule) OnMatch(call *OptRuleCall) {
 	}
 
 	if !agg.Schema().CanCallsPushdown() {
+		return
+	}
+
+	if agg.schema.HasHeimdallCall() && !agg.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -1257,4 +1277,79 @@ func (r *SlideWindowSpreadRule) OnMatch(call *OptRuleCall) {
 	clone.ForwardCallArgs()
 	clone.CountToSum()
 	call.TransformTo(clone)
+}
+
+type HeimdallAggCutRule struct {
+	OptRuleBase
+}
+
+func NewHeimdallAggCutRule(description string) *HeimdallAggCutRule {
+	mr := &HeimdallAggCutRule{}
+	if description == "" {
+		description = GetType(mr)
+	}
+
+	builder := NewOptRuleOperandBuilderBase()
+	builder.AnyInput((&LogicalAggregate{}).Type())
+
+	mr.Initialize(mr, builder.Operand(), description)
+	return mr
+}
+
+func (r *HeimdallAggCutRule) Catagory() OptRuleCatagory {
+	return RULE_HEIMADLL_PUSHDOWN
+}
+
+func (r *HeimdallAggCutRule) ToString() string {
+	return GetTypeName(r)
+}
+
+func (r *HeimdallAggCutRule) Equals(rhs OptRule) bool {
+	rr, ok := rhs.(*HeimdallAggCutRule)
+
+	if !ok {
+		return false
+	}
+
+	if r == rr {
+		return true
+	}
+
+	if r.Catagory() == rr.Catagory() && r.OptRuleBase.Equals(&(rr.OptRuleBase)) {
+		return true
+	}
+
+	return false
+}
+
+func (r *HeimdallAggCutRule) OnMatch(call *OptRuleCall) {
+	agg, ok := call.Node(0).(*LogicalAggregate)
+	if !ok {
+		logger.GetLogger().Warn("LogicalAggregate of Heimdal OnMatch failed, OptRuleCall Node 0 isn't *LogicalAggregate")
+		return
+	}
+
+	if !agg.Schema().HasHeimdallCall() {
+		return
+	}
+
+	if !agg.Schema().Options().IsGroupByAllDims() {
+		return
+	}
+
+	aggSonChild := agg.Children()[0].(*HeuVertex).Node()
+
+	exchange, ok := aggSonChild.(*LogicalExchange)
+	if ok && exchange.eType == SHARD_EXCHANGE {
+		return
+	}
+
+	aggVertex, ok := call.planner.Vertex(agg)
+	if !ok {
+		return
+	}
+
+	call.planner.(*HeuPlannerImpl).dag.RemoveEdge(agg.Children()[0].(*HeuVertex), aggVertex)
+	aggVertex = nil
+	call.TransformTo(aggSonChild)
 }

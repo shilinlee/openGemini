@@ -562,6 +562,15 @@ func (qs *QuerySchema) CountDistinct() *influxql.Call {
 	return qs.countDistinct
 }
 
+func (qs *QuerySchema) HasHeimdallCall() bool {
+	for _, v := range qs.calls {
+		if v.Name == "heimdall_detect" {
+			return true
+		}
+	}
+	return false
+}
+
 func (qs *QuerySchema) isMathFunction(call *influxql.Call) bool {
 	switch call.Name {
 	case "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log", "ln", "log2", "log10", "sqrt", "pow", "floor", "ceil", "round":

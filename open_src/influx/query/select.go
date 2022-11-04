@@ -604,6 +604,10 @@ func (opt *ProcessorOptions) GetGroupBy() map[string]struct{} {
 	return opt.GroupBy
 }
 
+func (opt *ProcessorOptions) IsGroupByAllDims() bool {
+	return opt.GroupByAllDims
+}
+
 func (opt *ProcessorOptions) HasInterval() bool {
 	return !opt.Interval.IsZero()
 }

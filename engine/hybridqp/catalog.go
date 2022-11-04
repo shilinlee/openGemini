@@ -227,6 +227,7 @@ type Catalog interface {
 	OnlyOneCallRef() *influxql.VarRef
 	LimitType() LimitType
 	HasLimit() bool
+	HasHeimdallCall() bool
 	LimitAndOffset() (int, int)
 	MatchPreAgg() bool
 	HasInSeriesAgg() bool
