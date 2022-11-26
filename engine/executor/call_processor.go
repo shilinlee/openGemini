@@ -41,7 +41,7 @@ func NewProcessors(inRowDataType, outRowDataType hybridqp.RowDataType, exprOpt [
 		case *influxql.Call:
 			if op.IsAggregateOp(expr) {
 				name := exprOpt[i].Expr.(*influxql.Call).Name
-				if strings.Contains(name, "heimdall") {
+				if strings.Contains(name, "castor") {
 					processor, err := NewWideProcessorImpl(inRowDataType, outRowDataType, exprOpt)
 					proRes.coProcessor = processor.(*WideCoProcessorImpl)
 					if err != nil {
@@ -165,7 +165,7 @@ func NewProcessors(inRowDataType, outRowDataType hybridqp.RowDataType, exprOpt [
 	return proRes, nil
 }
 
-func heimdallDetectRoutineFactory(_ ...interface{}) (interface{}, error) {
+func castorRoutineFactory(_ ...interface{}) (interface{}, error) {
 	return nil, nil
 }
 
@@ -183,8 +183,8 @@ func NewWideProcessorImpl(inRowDataType, outRowDataType hybridqp.RowDataType, ex
 		return nil, errors.New("the first expr should be a call")
 	}
 	switch expr.Name {
-	case "heimdall_detect":
-		wideRoutine = NewWideRoutineImpl(NewWideIterator(HeimdallDetectReduce, expr.Args[1:]))
+	case "castor":
+		wideRoutine = NewWideRoutineImpl(NewWideIterator(CastorReduce, expr.Args[1:]))
 	}
 	wideProcessor := NewWideCoProcessorImpl(wideRoutine)
 	return wideProcessor, nil

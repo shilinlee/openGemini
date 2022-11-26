@@ -60,7 +60,7 @@ const (
 	ModuleStat          = 16
 	ModuleShard         = 17
 	ModuleDownSample    = 18
-	ModuleHeimdall      = 19
+	ModuleCastor        = 19
 )
 
 const (

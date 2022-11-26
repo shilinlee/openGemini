@@ -13,10 +13,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package heimdall
+package castor
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"strings"
 	"sync"
@@ -34,7 +35,7 @@ type ByteReadReader interface {
 }
 
 // write record into connection
-func WriteData(record array.Record, out io.WriteCloser) error {
+func writeData(record array.Record, out io.WriteCloser) error {
 	w := ipc.NewWriter(out, ipc.WithSchema(record.Schema()))
 	err := w.Write(record)
 	if err != nil {
@@ -48,11 +49,14 @@ func WriteData(record array.Record, out io.WriteCloser) error {
 }
 
 // read record from connection
-func ReadData(in ByteReadReader) ([]array.Record, error) {
+func readData(in ByteReadReader) ([]array.Record, error) {
 	rdr, err := ipc.NewReader(in)
 	if err != nil {
 		if strings.HasSuffix(err.Error(), ": EOF") {
 			return nil, io.EOF
+		}
+		if strings.Contains(err.Error(), "closed network") {
+			return nil, io.ErrClosedPipe
 		}
 		return nil, err
 	}
@@ -68,56 +72,80 @@ func ReadData(in ByteReadReader) ([]array.Record, error) {
 	return records, nil
 }
 
-type heimdallCli struct {
+type castorCli struct {
 	dataSocketIn  io.WriteCloser // write into pyworker
 	dataSocketOut ByteReadReader // read from pyworker
 
-	alive    bool
-	logger   *logger.Logger
-	cnt      *int32 // reference of service client quantity
-	mu       sync.Mutex
-	respChan chan<- array.Record
+	alive     bool
+	logger    *logger.Logger
+	cnt       *int32 // reference of service client quantity
+	mu        sync.Mutex
+	chanSet   *chanSet
+	writeChan chan *data
+	cancel    context.CancelFunc
+	ctx       context.Context
 }
 
-func newClient(addr string, logger *logger.Logger, respChan chan<- array.Record, cnt *int32) (*heimdallCli, *errno.Error) {
+func newClient(addr string, logger *logger.Logger, chanSet *chanSet, cnt *int32) (*castorCli, *errno.Error) {
 	conn, err := getConn(addr)
 	if err != nil {
 		return nil, errno.NewError(errno.FailToConnectToPyworker)
 	}
-	_, err = conn.Write([]byte(BATCH))
-	if err != nil {
-		return nil, errno.NewError(errno.FailToConnectToPyworker)
-	}
 	readerBuf := bufio.NewReader(conn)
-	cli := &heimdallCli{
+	ctx, cancel := context.WithCancel(context.Background())
+	cli := &castorCli{
 		dataSocketIn:  conn,
 		dataSocketOut: readerBuf,
 		alive:         true,
 		logger:        logger,
 		cnt:           cnt,
-		respChan:      respChan,
+		chanSet:       chanSet,
+		writeChan:     make(chan *data, 1),
+		cancel:        cancel,
+		ctx:           ctx,
 	}
 	atomic.AddInt32(cli.cnt, 1)
-	go cli.Read()
+	go cli.read()
+	go cli.write()
 	return cli, nil
 }
 
-// Write send data to through internal connection
-func (h *heimdallCli) Write(rec array.Record) *errno.Error {
-	if err := WriteData(rec, h.dataSocketIn); err != nil {
-		defer h.Close()
-		return errno.NewThirdParty(err, errno.ModuleHeimdall)
+// write send data to through internal connection
+func (h *castorCli) write() {
+	for {
+		select {
+		case data, ok := <-h.writeChan:
+			if !ok {
+				return
+			}
+			if err := writeData(data.record, h.dataSocketIn); err != nil {
+				if data.retryCnt >= maxSendRetry {
+					h.chanSet.dataFailureChan <- data
+				} else {
+					data.retryCnt++
+					h.chanSet.dataRetryChan <- data
+				}
+				h.close()
+				return
+			}
+			h.chanSet.clientPool <- h
+		case <-h.ctx.Done():
+			return
+		}
 	}
-	return nil
 }
 
-// Read receive data to from internal connection
-func (h *heimdallCli) Read() {
-	defer h.Close()
+// read receive data to from internal connection
+func (h *castorCli) read() {
 	for {
-		records, err := ReadData(h.dataSocketOut)
+		records, err := readData(h.dataSocketOut)
 		if err != nil {
-			h.logger.Error(err.Error())
+			if err == io.EOF || err == io.ErrClosedPipe {
+				h.logger.Info("connection closed")
+			} else {
+				h.logger.Error(err.Error())
+			}
+			h.close()
 			return
 		}
 		for _, record := range records {
@@ -125,24 +153,26 @@ func (h *heimdallCli) Read() {
 				h.logger.Error(err.Error())
 				continue
 			}
-			h.respChan <- record
+			h.chanSet.resultChan <- record
 		}
 	}
 }
 
-// Close mark itself as not alive and close connection
-func (h *heimdallCli) Close() {
+// close mark itself as not alive and close connection
+func (h *castorCli) close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.alive {
 		return
 	}
 	h.alive = false
+	h.cancel()
+	close(h.writeChan)
 	if err := h.dataSocketIn.Close(); err != nil {
 		h.logger.Error(err.Error())
 	}
 	atomic.AddInt32(h.cnt, -1)
-	h.logger.Info("close heimdallCli")
+	h.logger.Info("close castorCli")
 }
 
 func checkRecordType(rec array.Record) *errno.Error {

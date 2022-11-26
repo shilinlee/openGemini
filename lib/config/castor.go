@@ -1,3 +1,18 @@
+/*
+Copyright 2022 Huawei Cloud Computing Technologies Co., Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package config
 
 import (
@@ -23,7 +38,7 @@ const (
 	FitDetect algorithmType = "fit_detect"
 )
 
-type Heimdall struct {
+type Castor struct {
 	Enabled           bool       `toml:"enabled"`
 	PyWorkerAddr      []string   `toml:"pyworker-addr"`
 	ConnPoolSize      int        `toml:"connect-pool-size"`
@@ -39,18 +54,18 @@ type algoConfig struct {
 	ConfigFile []string `toml:"config_filename"`
 }
 
-func NewHeimdall() Heimdall {
-	return Heimdall{
+func NewCastor() Castor {
+	return Castor{
 		ConnPoolSize:      DefaultPoolSize,
 		ResultWaitTimeout: DefaultWaitTimeout,
 	}
 }
 
-func (c *Heimdall) ApplyEnvOverrides(_ func(string) string) error {
+func (c *Castor) ApplyEnvOverrides(_ func(string) string) error {
 	return nil
 }
 
-func (c *Heimdall) Validate() *errno.Error {
+func (c Castor) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
@@ -83,7 +98,7 @@ func (c *Heimdall) Validate() *errno.Error {
 	return nil
 }
 
-func (c *Heimdall) checkUrl() *errno.Error {
+func (c *Castor) checkUrl() *errno.Error {
 	if len(c.PyWorkerAddr) == 0 {
 		return errno.NewError(errno.InvalidAddr)
 	}
@@ -107,11 +122,11 @@ func (c *Heimdall) checkUrl() *errno.Error {
 	return nil
 }
 
-func (c *Heimdall) GetWaitTimeout() time.Duration {
+func (c *Castor) GetWaitTimeout() time.Duration {
 	return time.Duration(c.ResultWaitTimeout * int(time.Second))
 }
 
-func (c *Heimdall) CheckAlgoAndConfExistence(algo, conf, algorithmType string) *errno.Error {
+func (c *Castor) CheckAlgoAndConfExistence(algo, conf, algorithmType string) *errno.Error {
 	switch algorithmType {
 	case string(Fit):
 		return c.Fit.checkAlgoAndConfigExistence(algo, conf)

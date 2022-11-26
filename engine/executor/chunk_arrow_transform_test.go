@@ -1,56 +1,41 @@
 package executor
 
 import (
-	"math"
+	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/openGemini/openGemini/engine/hybridqp"
+	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
-	"github.com/openGemini/openGemini/services/heimdall"
+	"github.com/openGemini/openGemini/services/castor"
 )
 
-func buildNumericChunk() Chunk {
-	row := hybridqp.NewRowDataTypeImpl(
-		influxql.VarRef{Val: "cpu", Type: influxql.Float},
-		influxql.VarRef{Val: "mem", Type: influxql.Integer},
-		influxql.VarRef{Val: "net", Type: influxql.Float},
-		influxql.VarRef{Val: "disk", Type: influxql.Integer},
-	)
-	cb := NewChunkBuilder(row)
-	chunk := cb.NewChunk("heimdall")
+type timeValTuple struct {
+	timestamp int64
+	value     interface{}
+}
+type timeValList []timeValTuple
 
-	timestamp := []int64{1, 2, 3, 4, 5, 6}
-	chunk.AppendTime(timestamp...)
-
-	seriesIdx := []int{0, 1, 4, 5}
-	chunk.AppendTagsAndIndexes(
-		[]ChunkTags{
-			*ParseChunkTags("t=1"), *ParseChunkTags("t=2"),
-			*ParseChunkTags("t=3"), *ParseChunkTags("t=4"),
-		},
-		seriesIdx,
-	)
-
-	chunk.AppendIntervalIndex(seriesIdx...) // use to store window index(for marking series), left open right close
-
-	chunk.Column(0).AppendFloatValues(1.0, 3.0, 6.0)
-	chunk.Column(0).AppendNilsV2(false, true, false, true, false, true)
-
-	chunk.Column(1).AppendIntegerValues(1, 3, 5, 6)
-	chunk.Column(1).AppendNilsV2(true, false, true, true, true, false)
-
-	chunk.Column(2).AppendFloatValues(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
-	chunk.Column(2).AppendManyNotNil(len(timestamp))
-
-	chunk.Column(3).AppendIntegerValues(1, 2, 3, 4, 5, 6)
-	chunk.Column(3).AppendManyNotNil(len(timestamp)) // must set up bit map
-
-	return chunk
+func newTimeValTuple(timestamp []int64, values []interface{}) *timeValList {
+	var ret timeValList
+	dLen := len(timestamp)
+	for i := 0; i < dLen; i++ {
+		ret = append(ret, timeValTuple{
+			timestamp: timestamp[i],
+			value:     values[i],
+		})
+	}
+	sort.Sort(ret)
+	return &ret
 }
 
+func (t timeValList) Len() int           { return len(t) }
+func (t timeValList) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t timeValList) Less(i, j int) bool { return t[i].timestamp < t[j].timestamp }
 func matchContent(c Chunk, recs []array.Record) bool {
 	// timestamp store as a column in array.Record
 
@@ -212,71 +197,299 @@ func isTimeEqual(c Chunk, recs []array.Record) bool {
 	return reflect.DeepEqual(cTimes, rTimes)
 }
 
-func isFloatEqual(f1 float64, f2 float64) bool {
-	eps := 10e-5
-	return math.Abs(f1-f2) <= eps
+func matchMultiContent(chunks []Chunk, recs []array.Record) error {
+	chunkVals := make(map[string][]interface{})
+	chunkTimes := make(map[string][]int64)
+	for _, c := range chunks {
+		tagIdx := c.TagIndex()
+		refs := c.RowDataType().MakeRefs()
+		for i, t := range c.Tags() {
+			cTagVal, exist := t.GetChunkTagValue("t")
+			if !exist {
+				return fmt.Errorf("tag not found")
+			}
+			cVals, exist := chunkVals[cTagVal]
+			if !exist {
+				cVals = []interface{}{}
+			}
+			start := tagIdx[i]
+			var end int
+
+			switch refs[0].Type {
+			case influxql.Float:
+				if i == len(tagIdx)-1 {
+					end = len(c.Column(0).FloatValues())
+				} else {
+					end = tagIdx[i+1]
+				}
+				for _, v := range c.Column(0).FloatValues()[start:end] {
+					cVals = append(cVals, v)
+				}
+			case influxql.Integer:
+				if i == len(tagIdx)-1 {
+					end = len(c.Column(0).IntegerValues())
+				} else {
+					end = tagIdx[i+1]
+				}
+				for _, v := range c.Column(0).IntegerValues()[start:end] {
+					cVals = append(cVals, v)
+				}
+			default:
+				return fmt.Errorf("only support integer\\float type")
+			}
+
+			chunkVals[cTagVal] = cVals
+			cTimes, exist := chunkTimes[cTagVal]
+			if !exist {
+				cTimes = []int64{}
+			}
+			cTimes = append(cTimes, c.Time()[start:end]...)
+			chunkTimes[cTagVal] = cTimes
+		}
+	}
+
+	recVals := make(map[string][]interface{})
+	recTimes := make(map[string][]int64)
+	for _, r := range recs {
+		rTagVal, err := castor.GetMetaValueFromRecord(r, "t")
+		if err != nil {
+			return err
+		}
+		vals, exist := recVals[rTagVal]
+		if !exist {
+			vals = []interface{}{}
+		}
+
+		switch r.Schema().Field(0).Type {
+		case arrow.PrimitiveTypes.Float64:
+			rCol, ok := r.Column(0).(*array.Float64)
+			if !ok {
+				return fmt.Errorf("dtype not correct")
+			}
+			for _, v := range rCol.Float64Values() {
+				vals = append(vals, v)
+			}
+		case arrow.PrimitiveTypes.Int64:
+			rCol, ok := r.Column(0).(*array.Int64)
+			if !ok {
+				return fmt.Errorf("dtype not correct")
+			}
+			for _, v := range rCol.Int64Values() {
+				vals = append(vals, v)
+			}
+		}
+		recVals[rTagVal] = vals
+
+		rTime, ok := r.Column(1).(*array.Int64)
+		if !ok {
+			return fmt.Errorf("dtype not correct")
+		}
+		times, exist := recTimes[rTagVal]
+		if !exist {
+			times = []int64{}
+		}
+		times = append(times, rTime.Int64Values()...)
+		recTimes[rTagVal] = times
+	}
+
+	if len(chunkVals) != len(recVals) {
+		return fmt.Errorf("value size not equal")
+	}
+	if len(chunkTimes) != len(recTimes) {
+		return fmt.Errorf("time size not equal")
+	}
+
+	for key, cTimes := range chunkTimes {
+		cVals := chunkVals[key]
+		rTimes, exist := recTimes[key]
+		if !exist {
+			return fmt.Errorf("series not found")
+		}
+		rVals := recVals[key]
+
+		chunkData := newTimeValTuple(cTimes, cVals)
+		recordData := newTimeValTuple(rTimes, rVals)
+		if !reflect.DeepEqual(chunkData, recordData) {
+			return fmt.Errorf("data not equal")
+		}
+	}
+
+	return nil
 }
 
-func isFloatColumnEqual(cCol Column, rCol *array.Float64) bool {
-	cVirtualIdx := 0
-	for j, rVal := range rCol.Float64Values() {
-		if rCol.IsNull(j) {
-			continue
-		}
-		if rCol.IsNull(j) != cCol.IsNilV2(j) {
-			return false
-		}
-		cVal := cCol.FloatValue(cVirtualIdx)
-		if !isFloatEqual(rVal, cVal) {
-			return false
-		}
-		cVirtualIdx++
-	}
-	return true
+func buildIntegerChunk() []Chunk {
+	row2 := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Integer})
+	cb2 := NewChunkBuilder(row2)
+	ch2 := cb2.NewChunk("castor")
+	timestamp2 := []int64{1, 2, 3, 4, 5, 6}
+	ch2.AppendTime(timestamp2...)
+	seriesIdx2 := []int{0, 3}
+	ch2.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1"), *ParseChunkTags("t=2")}, seriesIdx2)
+	ch2.AppendIntervalIndex(seriesIdx2...)
+	ch2.Column(0).AppendIntegerValues(1, 2, 3, 4, 5, 6)
+	ch2.Column(0).AppendNilsV2(true, true, true, true, true, true)
+	ch2.CheckChunk()
+
+	return []Chunk{ch2}
 }
 
-func isIntegerColumnEqual(cCol Column, rCol *array.Int64) bool {
-	cVirtualIdx := 0
-	for j, rVal := range rCol.Int64Values() {
-		if rCol.IsNull(j) {
-			continue
-		}
-		if rCol.IsNull(j) != cCol.IsNilV2(j) {
-			return false
-		}
-		cVal := cCol.IntegerValue(cVirtualIdx)
-		if rVal != cVal {
-			return false
-		}
-		cVirtualIdx++
-	}
-	return true
+func buildDiffDtypeChunk() []Chunk {
+	row := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Float})
+	cb := NewChunkBuilder(row)
+	ch := cb.NewChunk("castor")
+	ch.AppendTime(0)
+	ch.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1")}, []int{0})
+	ch.AppendIntervalIndex(0)
+	ch.Column(0).AppendFloatValues(0.0)
+	ch.Column(0).AppendNilsV2(true)
+	ch.CheckChunk()
+
+	row2 := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Integer})
+	cb2 := NewChunkBuilder(row2)
+	ch2 := cb2.NewChunk("castor")
+	ch2.AppendTime(0)
+	ch2.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1")}, []int{0})
+	ch2.AppendIntervalIndex(0)
+	ch2.Column(0).AppendIntegerValues(0)
+	ch2.Column(0).AppendNilsV2(true)
+	ch2.CheckChunk()
+
+	return []Chunk{ch, ch2}
 }
 
-func Test_chunkToArrowRecord(t *testing.T) {
-	c := buildNumericChunk()
-	recs, err := chunkToArrowRecords(c, "algo", "xx.conf", "detect", "123")
-	if err != nil {
-		t.Fatal("convert pure numeric chunk fail")
-	}
-	if !matchContent(c, recs) {
-		t.Fatal("content not match")
-	}
+func buildUnsupportDtypeChunk() []Chunk {
+	row := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.String})
+	cb := NewChunkBuilder(row)
+	ch := cb.NewChunk("castor")
+	ch.AppendTime(0)
+	ch.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1")}, []int{0})
+	ch.AppendIntervalIndex(0)
+	ch.Column(0).AppendStringValues("str")
+	ch.Column(0).AppendNilsV2(true)
+	ch.CheckChunk()
+
+	return []Chunk{ch}
+}
+
+func buildMultiFloatChunk() []Chunk {
+	row1 := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Float})
+	cb1 := NewChunkBuilder(row1)
+	ch1 := cb1.NewChunk("castor")
+	timestamp1 := []int64{0, 1, 2, 3, 4, 5, 6}
+	ch1.AppendTime(timestamp1...)
+	seriesIdx := []int{0, 3}
+	interval := []int{0, 1, 3, 4, 6}
+	ch1.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1"), *ParseChunkTags("t=2")}, seriesIdx)
+	ch1.AppendIntervalIndex(interval...)
+	ch1.Column(0).AppendFloatValues(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+	ch1.Column(0).AppendNilsV2(true, true, true, true, true, true, true)
+	ch1.CheckChunk()
+
+	row2 := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Float})
+	cb2 := NewChunkBuilder(row2)
+	ch2 := cb2.NewChunk("castor")
+	timestamp2 := []int64{7, 8, 9}
+	ch2.AppendTime(timestamp2...)
+	seriesIdx2 := []int{0}
+	ch2.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=1")}, seriesIdx2)
+	ch2.AppendIntervalIndex(seriesIdx2...)
+	ch2.Column(0).AppendFloatValues(7.0, 8.0, 9.0)
+	ch2.Column(0).AppendNilsV2(true, true, true)
+	ch2.CheckChunk()
+
+	row3 := hybridqp.NewRowDataTypeImpl(influxql.VarRef{Val: "f", Type: influxql.Float})
+	cb3 := NewChunkBuilder(row3)
+	ch3 := cb3.NewChunk("castor")
+	timestamp3 := []int64{7, 8, 9}
+	ch3.AppendTime(timestamp3...)
+	seriesIdx3 := []int{0}
+	ch3.AppendTagsAndIndexes([]ChunkTags{*ParseChunkTags("t=2")}, seriesIdx3)
+	ch3.AppendIntervalIndex(seriesIdx3...)
+	ch3.Column(0).AppendFloatValues(7.0, 8.0, 9.0)
+	ch3.Column(0).AppendNilsV2(true, true, true)
+	ch3.CheckChunk()
+
+	return []Chunk{ch1, ch2, ch3}
 }
 
 func Test_arrowRecordToChunk(t *testing.T) {
-	rec := heimdall.BuildNumericRecord()
+	rec := castor.BuildNumericRecord()
 	baseSchema := rec.Schema()
 	row, err := buildChunkSchema(baseSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cb := NewChunkBuilder(row)
-	chunk := cb.NewChunk("heimdall")
+	chunk := cb.NewChunk("castor")
 	if err = copyArrowRecordToChunk(rec, chunk, nil); err != nil {
 		t.Fatal("convert pure numeric record fail")
 	}
 	if !matchContent(chunk, []array.Record{rec}) {
 		t.Fatal("content not match")
+	}
+}
+
+// expect return records with distinct seires when multiple chunk as input
+func Test_ChunkToArrowRecord_Float(t *testing.T) {
+	chunks := buildMultiFloatChunk()
+	args := []influxql.Expr{
+		&influxql.StringLiteral{Val: "algo"},
+		&influxql.StringLiteral{Val: "xx.conf"},
+		&influxql.StringLiteral{Val: "detect"},
+	}
+	recs, err := chunkToArrowRecords(chunks, "123", args)
+	if err != nil {
+		t.Fatal("convert pure numeric chunk fail")
+	}
+	if err := matchMultiContent(chunks, recs); err != nil {
+		t.Fatal("content not match")
+	}
+}
+
+func Test_ChunkToArrowRecord_Int(t *testing.T) {
+	chunks := buildIntegerChunk()
+	args := []influxql.Expr{
+		&influxql.StringLiteral{Val: "algo"},
+		&influxql.StringLiteral{Val: "xx.conf"},
+		&influxql.StringLiteral{Val: "detect"},
+	}
+	recs, err := chunkToArrowRecords(chunks, "123", args)
+	if err != nil {
+		t.Fatal("convert pure numeric chunk fail")
+	}
+	if err := matchMultiContent(chunks, recs); err != nil {
+		t.Fatal("content not match")
+	}
+}
+
+func Test_chunkToArrowRecords_NoneNumeric(t *testing.T) {
+	chunks := buildUnsupportDtypeChunk()
+	args := []influxql.Expr{
+		&influxql.StringLiteral{Val: "algo"},
+		&influxql.StringLiteral{Val: "xx.conf"},
+		&influxql.StringLiteral{Val: "detect"},
+	}
+	_, err := chunkToArrowRecords(chunks, "123", args)
+	if err == nil || !errno.Equal(err, errno.DtypeNotSupport) {
+		t.Fatal("only support numeric data type, but no expected error return")
+	}
+}
+
+func Test_chunkToArrowRecords_InvalidArgsType(t *testing.T) {
+	chunks := buildIntegerChunk()
+	args := []influxql.Expr{
+		&influxql.IntegerLiteral{Val: 0},
+		&influxql.IntegerLiteral{Val: 0},
+		&influxql.IntegerLiteral{Val: 0},
+	}
+	_, err := chunkToArrowRecords(chunks, "123", args)
+	if err == nil || !errno.Equal(err, errno.TypeAssertFail) {
+		t.Fatal("args should be string type, but no expected error return")
+	}
+}
+func Test_getFieldInfo_TypeNotEqual(t *testing.T) {
+	chunks := buildDiffDtypeChunk()
+	if _, err := getFieldInfo(chunks); err == nil || !errno.Equal(err, errno.FieldTypeNotEqual) {
+		t.Fatal("data type change in chunks but not detected")
 	}
 }

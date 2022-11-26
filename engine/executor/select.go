@@ -183,7 +183,7 @@ func buildHeuristicPlanner() hybridqp.Planner {
 	planner.AddRule(NewAggPushdownToReaderRule(""))
 	planner.AddRule(NewAggPushdownToSeriesRule(""))
 
-	planner.AddRule(NewHeimdallAggCutRule(""))
+	planner.AddRule(NewCastorAggCutRule(""))
 
 	planner.AddRule(NewAggSpreadToSortAppendRule(""))
 	planner.AddRule(NewAggSpreadToExchangeRule(""))

@@ -69,7 +69,8 @@ type TSStore struct {
 	HierarchicalStore retention.Config `toml:"hierarchical-storage"`
 
 	// TLS provides configuration options for all https endpoints.
-	TLS tlsconfig.Config `toml:"tls"`
+	TLS      tlsconfig.Config `toml:"tls"`
+	Analysis Castor           `toml:"castor"`
 }
 
 // NewTSStore returns an instance of Config with reasonable defaults.
@@ -88,6 +89,7 @@ func NewTSStore() *TSStore {
 	c.HierarchicalStore = retention.NewConfig()
 	c.Gossip = NewGossip()
 
+	c.Analysis = NewCastor()
 	return c
 }
 
@@ -106,6 +108,7 @@ func (c *TSStore) Validate() error {
 		c.TLS,
 		c.Logging,
 		c.Spdy,
+		c.Analysis,
 	}
 
 	for _, item := range items {

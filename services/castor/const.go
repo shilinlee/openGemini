@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package heimdall
+package castor
 
 import "time"
 
@@ -34,6 +34,7 @@ const (
 	PostProcessType internalTagKey = "type"
 	ResultSeries    internalTagKey = "series"
 	OutputInfo      internalTagKey = "_outputInfo"
+	TriggerType     internalTagKey = "triggerType"
 )
 
 var internalKeySet = map[string]struct{}{
@@ -51,9 +52,10 @@ var internalKeySet = map[string]struct{}{
 	string(PostProcessType): {},
 	string(ResultSeries):    {},
 	string(OutputInfo):      {},
+	string(TriggerType):     {},
 }
 
-type resultFieldKey string // validate result from heimdall
+type resultFieldKey string // validate result from castor
 
 const (
 	AnomalyLevel resultFieldKey = "anomalyLevel"
@@ -70,12 +72,6 @@ const (
 	DATA messageType = "data"
 )
 
-type connType string
-
-const (
-	BATCH connType = "batch\n"
-)
-
 type queryMode string
 
 const (
@@ -88,4 +84,5 @@ const (
 	chanBufferSize    = 100
 	getCliTimeout     = 2 * time.Second
 	connCheckInterval = 5 * time.Second
+	maxSendRetry      = 1
 )

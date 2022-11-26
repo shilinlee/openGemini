@@ -29,6 +29,7 @@ import (
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/influx/query"
+	"github.com/openGemini/openGemini/services/castor"
 )
 
 func buildInRowDataTypeIntegral() hybridqp.RowDataType {
@@ -4394,83 +4395,87 @@ func buildBenchChunks(chunkCount, chunkSize, tagPerChunk, intervalPerChunk int) 
 	return chunkList
 }
 
-func buildDstRowDataTypeHeimdallDetect() hybridqp.RowDataType {
+func buildInRowDataTypeCastor() hybridqp.RowDataType {
 	schema := hybridqp.NewRowDataTypeImpl(
-		influxql.VarRef{Val: "heimdall_detect(\"age\")", Type: influxql.Float},
-		influxql.VarRef{Val: "heimdall_detect(\"height\")", Type: influxql.Integer},
+		influxql.VarRef{Val: "f", Type: influxql.Float},
 	)
 	return schema
 }
 
-func buildDstChunkHeimdallDetect() []executor.Chunk {
-	inChunks := make([]executor.Chunk, 0, 2)
-	rowDataType := buildDstRowDataTypeHeimdallDetect()
-
-	b := executor.NewChunkBuilder(rowDataType)
-
-	// first chunk
-	inCk1 := b.NewChunk("mst")
-	inCk1.AppendTagsAndIndexes(
-		[]executor.ChunkTags{
-			*ParseChunkTags("country="), *ParseChunkTags("country=american"),
-			*ParseChunkTags("country=canada"), *ParseChunkTags("country=china")},
-		[]int{0, 1, 3, 5})
-	inCk1.AppendIntervalIndex([]int{0, 1, 3, 5}...)
-	inCk1.AppendTime([]int64{10, 1, 6, 4, 9, 0}...)
-
-	inCk1.Column(0).AppendFloatValues([]float64{102, 20.5, 52.7, 35, 60.8, 12.3}...)
-	inCk1.Column(0).AppendManyNotNil(6)
-
-	inCk1.Column(1).AppendIntegerValues([]int64{191, 80, 153, 138, 180, 70}...)
-	inCk1.Column(1).AppendManyNotNil(6)
-
-	// second chunk
-	inCk2 := b.NewChunk("mst")
-	inCk2.AppendTagsAndIndexes(
-		[]executor.ChunkTags{
-			*ParseChunkTags("country=china"), *ParseChunkTags("country=germany"),
-			*ParseChunkTags("country=japan")},
-		[]int{0, 2, 4})
-	inCk2.AppendIntervalIndex([]int{0, 2, 4}...)
-	inCk2.AppendTime([]int64{5, 11, 2, 7, 3, 8}...)
-
-	inCk2.Column(0).AppendFloatValues([]float64{48.8, 123, 3.4, 28.3, 30}...)
-	inCk2.Column(0).AppendNilsV2(true, true, true, true, true, false)
-
-	inCk2.Column(1).AppendIntegerValues([]int64{149, 203, 90, 121, 179}...)
-	inCk2.Column(1).AppendNilsV2(true, true, true, false, true, true)
-
-	inChunks = append(inChunks, inCk1, inCk2)
-
-	return inChunks
+func buildDstRowDataTypeCastor() hybridqp.RowDataType {
+	return buildInRowDataTypeCastor()
 }
 
-// TODO: to modify it to be consistent with the result of HeimdallDetect processing
-func TestStreamAggregateTransformHeimdallDetect(t *testing.T) {
-	inChunks := buildComInChunk()
-	dstChunks := buildDstChunkHeimdallDetect()
+func buildInChunkCastor() executor.Chunk {
+	rowDataType := buildInRowDataTypeCastor()
+	b := executor.NewChunkBuilder(rowDataType)
+
+	c := b.NewChunk("castor")
+	c.AppendTagsAndIndexes([]executor.ChunkTags{*ParseChunkTags("t=1")}, []int{0})
+	c.AppendIntervalIndex([]int{0}...)
+	c.AppendTime([]int64{0, 1, 2, 3, 4, 5}...)
+
+	c.Column(0).AppendFloatValues([]float64{102, 20.5, 52.7, 35, 60.8, 12.3}...)
+	c.Column(0).AppendManyNotNil(6)
+
+	return c
+}
+
+func buildDstChunkCastor() executor.Chunk {
+	rowDataType := buildDstRowDataTypeCastor()
+	b := executor.NewChunkBuilder(rowDataType)
+
+	c := b.NewChunk("castor")
+	c.AppendTagsAndIndexes([]executor.ChunkTags{*ParseChunkTags("t=1")}, []int{0})
+	c.AppendIntervalIndex(0)
+	c.AppendTime(0)
+
+	c.Column(0).AppendFloatValues(0)
+	c.Column(0).AppendManyNotNil(1)
+
+	return c
+}
+
+func TestStreamAggregateTransformCastor(t *testing.T) {
+	inChunk := buildInChunkCastor()
+	dstChunk := buildDstChunkCastor()
 
 	exprOpt := []hybridqp.ExprOptions{
 		{
-			Expr: &influxql.Call{Name: "heimdall_detect", Args: []influxql.Expr{hybridqp.MustParseExpr("age")}},
-			Ref:  influxql.VarRef{Val: `heimdall_detect("age")`, Type: influxql.Integer},
-		},
-		{
-			Expr: &influxql.Call{Name: "heimdall_detect", Args: []influxql.Expr{hybridqp.MustParseExpr("height")}},
-			Ref:  influxql.VarRef{Val: `heimdall_detect("height")`, Type: influxql.Float},
+			Expr: &influxql.Call{
+				Name: "castor",
+				Args: []influxql.Expr{
+					hybridqp.MustParseExpr("f"),
+					&influxql.StringLiteral{Val: "DIFFERENTIATEAD"},
+					&influxql.StringLiteral{Val: "detect_base"},
+					&influxql.StringLiteral{Val: "detect"},
+				},
+			},
+			Ref: influxql.VarRef{Val: `f`, Type: influxql.Integer},
 		},
 	}
 
 	opt := query.ProcessorOptions{
-		Dimensions: []string{"country"},
+		Dimensions: []string{"t"},
 		Interval:   hybridqp.Interval{Duration: 20 * time.Nanosecond},
-		ChunkSize:  6,
+		ChunkSize:  inChunk.Len(),
 	}
+
+	srv, _, err := castor.MockCastorService(6661)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if err := castor.MockPyWorker(srv.Config.PyWorkerAddr[0]); err != nil {
+		t.Fatal(err)
+	}
+	wait := 8 * time.Second // wait for service to build connection
+	time.Sleep(wait)
 
 	testStreamAggregateTransformBase(
 		t,
-		inChunks, dstChunks,
-		buildComRowDataType(), buildDstRowDataTypeHeimdallDetect(),
+		[]executor.Chunk{inChunk}, []executor.Chunk{dstChunk},
+		buildInRowDataTypeCastor(), buildDstRowDataTypeCastor(),
 		exprOpt, opt,
 	)
 }

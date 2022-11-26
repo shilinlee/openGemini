@@ -917,7 +917,7 @@ func getPlanner() *executor.HeuPlannerImpl {
 	planner.AddRule(executor.NewAggPushdownToReaderRule(""))
 	planner.AddRule(executor.NewAggPushdownToSeriesRule(""))
 
-	planner.AddRule(executor.NewHeimdallAggCutRule(""))
+	planner.AddRule(executor.NewCastorAggCutRule(""))
 
 	planner.AddRule(executor.NewAggSpreadToSortAppendRule(""))
 	planner.AddRule(executor.NewAggSpreadToExchangeRule(""))
@@ -926,11 +926,11 @@ func getPlanner() *executor.HeuPlannerImpl {
 	return planner
 }
 
-func TestHeimdallDetectPushDownGroupByAllSeries(t *testing.T) {
+func TestCastorPushDownGroupByAllSeries(t *testing.T) {
 	fields := influxql.Fields{
 		&influxql.Field{
 			Expr: &influxql.Call{
-				Name: "heimdall_detect",
+				Name: "castor",
 				Args: []influxql.Expr{
 					&influxql.VarRef{
 						Val:  "value",
@@ -940,7 +940,7 @@ func TestHeimdallDetectPushDownGroupByAllSeries(t *testing.T) {
 			},
 		},
 	}
-	columnsName := []string{"heimdall_detect"}
+	columnsName := []string{"castor"}
 	opt := query.ProcessorOptions{}
 	opt.GroupByAllDims = true
 
@@ -965,11 +965,11 @@ func TestHeimdallDetectPushDownGroupByAllSeries(t *testing.T) {
 	}
 }
 
-func TestHeimdallDetectPushDownGroupByNotAllSeries(t *testing.T) {
+func TestCastorPushDownGroupByNotAllSeries(t *testing.T) {
 	fields := influxql.Fields{
 		&influxql.Field{
 			Expr: &influxql.Call{
-				Name: "heimdall_detect",
+				Name: "castor",
 				Args: []influxql.Expr{
 					&influxql.VarRef{
 						Val:  "value",
@@ -979,7 +979,7 @@ func TestHeimdallDetectPushDownGroupByNotAllSeries(t *testing.T) {
 			},
 		},
 	}
-	columnsName := []string{"heimdall_detect"}
+	columnsName := []string{"castor"}
 	opt := query.ProcessorOptions{}
 	opt.GroupByAllDims = false
 
@@ -1032,11 +1032,11 @@ func buildPlan(t *testing.T, schema *executor.QuerySchema) hybridqp.QueryNode {
 	return plan
 }
 
-func TestHeimdallRuleEquale(t *testing.T) {
+func TestCastorRuleEquale(t *testing.T) {
 	fields := influxql.Fields{
 		&influxql.Field{
 			Expr: &influxql.Call{
-				Name: "heimdall_detect",
+				Name: "castor",
 				Args: []influxql.Expr{
 					&influxql.VarRef{
 						Val:  "value",
@@ -1046,7 +1046,7 @@ func TestHeimdallRuleEquale(t *testing.T) {
 			},
 		},
 	}
-	columnsName := []string{"heimdall_detect"}
+	columnsName := []string{"castor"}
 	opt := query.ProcessorOptions{}
 	opt.GroupByAllDims = false
 
@@ -1063,8 +1063,8 @@ func TestHeimdallRuleEquale(t *testing.T) {
 	if best == nil {
 		t.Error("no best plan found")
 	}
-	hRule := executor.NewHeimdallAggCutRule("")
-	hRul2 := executor.NewHeimdallAggCutRule("")
+	hRule := executor.NewCastorAggCutRule("")
+	hRul2 := executor.NewCastorAggCutRule("")
 	if !hRule.Equals(hRul2) {
 		t.Error("hemidall rule not equal")
 	}

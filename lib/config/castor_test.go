@@ -1,3 +1,18 @@
+/*
+Copyright 2022 Huawei Cloud Computing Technologies Co., Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package config
 
 import (
@@ -8,31 +23,31 @@ import (
 )
 
 type conf struct {
-	C Heimdall `toml:"heimdall"`
+	C Castor `toml:"castor"`
 }
 
 func newConf() *conf {
-	c := NewHeimdall()
+	c := NewCastor()
 	return &conf{c}
 }
 
 func Test_CorrectConfig(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		pyworker-addr = ["127.0.0.1:6666"]
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 10  # default: 30 second
-  	[heimdall.detect]
+  	[castor.detect]
 		algorithm = ['BatchDIFFERENTIATEAD']
 		config_filename = ['detect_base']
- 	[heimdall.fit_detect]
+ 	[castor.fit_detect]
 		algorithm = ['DIFFERENTIATEAD']
 		config_filename = ['detect_base']
-  	[heimdall.predict]
+  	[castor.predict]
 		algorithm = ['METROPD']
 		config_filename = ['predict_base']
-  	[heimdall.fit]
+  	[castor.fit]
 		algorithm = ['METROPD']
 		config_filename = ['fit_base']
 	`
@@ -45,7 +60,7 @@ func Test_CorrectConfig(t *testing.T) {
 
 func Test_InvalidPoolSize(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 0  # default: 30, connection pool to pyworker
 	`
@@ -58,7 +73,7 @@ func Test_InvalidPoolSize(t *testing.T) {
 
 func Test_InvalidResultWaitTimeout(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 0  # default: 30 second
@@ -72,7 +87,7 @@ func Test_InvalidResultWaitTimeout(t *testing.T) {
 
 func Test_InvalidAddr(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
@@ -87,7 +102,7 @@ func Test_InvalidAddr(t *testing.T) {
 
 func Test_InvalidAddr2(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
@@ -102,7 +117,7 @@ func Test_InvalidAddr2(t *testing.T) {
 
 func Test_InvalidAddr3(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
@@ -116,7 +131,7 @@ func Test_InvalidAddr3(t *testing.T) {
 
 func Test_InvalidPort(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
@@ -131,7 +146,7 @@ func Test_InvalidPort(t *testing.T) {
 
 func Test_InvalidPort2(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
@@ -146,12 +161,12 @@ func Test_InvalidPort2(t *testing.T) {
 
 func Test_IncompleteAlgoConf(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
 		pyworker-addr = ["127.0.0.1:6666"]
-	[heimdall.detect]
+	[castor.detect]
 		algorithm = ['BatchDIFFERENTIATEAD']
 		config_filename = []
 	`
@@ -164,12 +179,12 @@ func Test_IncompleteAlgoConf(t *testing.T) {
 
 func Test_IncompleteAlgo(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 		enabled = true
 		connect-pool-size = 1  # default: 30, connection pool to pyworker
 		result-wait-timeout = 1  # default: 30 second
 		pyworker-addr = ["127.0.0.1:6666"]
-	[heimdall.detect]
+	[castor.detect]
 		algorithm = []
 		config_filename = ["detect"]
 	`
@@ -182,21 +197,21 @@ func Test_IncompleteAlgo(t *testing.T) {
 
 func Test_CheckAlgoAndConfExistence(t *testing.T) {
 	confStr := `
-	[heimdall]
+	[castor]
 	enabled = true
 	pyworker-addr = ["127.0.0.1:6666"]
 	connect-pool-size = 1  # default: 30, connection pool to each pyworker
 	result-wait-timeout = 10  # default: 30 second
-	[heimdall.detect]
+	[castor.detect]
 		algorithm = ['BatchDIFFERENTIATEAD']
 		config_filename = ['detect_base']
-	[heimdall.fit_detect]
+	[castor.fit_detect]
 		algorithm = ['DIFFERENTIATEAD']
 		config_filename = ['detect_base']
-	[heimdall.predict]
+	[castor.predict]
 		algorithm = ['METROPD']
 		config_filename = ['predict_base']
-	[heimdall.fit]
+	[castor.fit]
 		algorithm = ['METROPD']
 		config_filename = ['fit_base']
 	`

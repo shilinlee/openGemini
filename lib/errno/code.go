@@ -203,7 +203,7 @@ const (
 	WatchFileTimeout = 7001
 )
 
-// heimdall service
+// castor service
 const (
 	DtypeNotSupport          = 8001
 	DtypeNotMatch            = 8002
@@ -227,4 +227,15 @@ const (
 	AlgoTypeNotFound         = 8020
 	InvalidResultWaitTimeout = 8021
 	InvalidPoolSize          = 8022
+	ServiceNotEnable         = 8023
+	ServiceNotAlive          = 8024
+	ResponseIncomplete       = 8025
+	OnlySupportSingleField   = 8026
+	InvalidArgsNum           = 8027
+	DataTooMuch              = 8028
+	FieldTypeNotEqual        = 8029
+	FieldInfoNotFound        = 8030
+	FieldNotFound            = 8031
+	MultiFieldIndex          = 8032
+	EmptyData                = 8033
 )

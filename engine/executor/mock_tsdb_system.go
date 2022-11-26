@@ -967,7 +967,7 @@ func (s *TSDBSystem) ExecSQL(sql string, validator func([]Chunk)) error {
 		planner.AddRule(NewAggPushdownToReaderRule(""))
 		planner.AddRule(NewAggPushdownToSeriesRule(""))
 
-		planner.AddRule(NewHeimdallAggCutRule(""))
+		planner.AddRule(NewCastorAggCutRule(""))
 
 		planner.AddRule(NewAggSpreadToSortAppendRule(""))
 		planner.AddRule(NewAggSpreadToExchangeRule(""))

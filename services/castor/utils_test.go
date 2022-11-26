@@ -13,14 +13,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package heimdall
+package castor
 
 import (
 	"testing"
 )
 
 func Test_getConn(t *testing.T) {
-	addr := "127.0.0.1:6666"
+	addr := "127.0.0.1:6663"
 	if err := MockPyWorker(addr); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func Test_getConn_InvalidAddr(t *testing.T) {
 }
 
 func Test_getConn_InvalidAddr2(t *testing.T) {
-	addr := "127.0.0.1:6666"
+	addr := "127.0.0.1:6664"
 	if _, err := getConn(addr); err == nil {
 		t.Fatal("connect to invalid addr")
 	}

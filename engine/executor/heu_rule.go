@@ -318,7 +318,7 @@ func (r *AggPushdownToExchangeRule) OnMatch(call *OptRuleCall) {
 		break
 	}
 
-	if exchange.Schema().HasHeimdallCall() && !exchange.Schema().Options().IsGroupByAllDims() {
+	if exchange.Schema().HasCastorCall() && !exchange.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -397,7 +397,7 @@ func (r *AggPushdownToReaderRule) OnMatch(call *OptRuleCall) {
 		return
 	}
 
-	if reader.schema.HasHeimdallCall() && !reader.Schema().Options().IsGroupByAllDims() {
+	if reader.schema.HasCastorCall() && !reader.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -554,7 +554,7 @@ func (r *AggSpreadToExchangeRule) OnMatch(call *OptRuleCall) {
 	if !agg.Schema().CanCallsPushdown() {
 		return
 	}
-	if agg.schema.HasHeimdallCall() {
+	if agg.schema.HasCastorCall() {
 		return
 	}
 
@@ -632,7 +632,7 @@ func (r *AggSpreadToSortAppendRule) OnMatch(call *OptRuleCall) {
 		return
 	}
 
-	if agg.schema.HasHeimdallCall() && !agg.Schema().Options().IsGroupByAllDims() {
+	if agg.schema.HasCastorCall() && !agg.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -708,7 +708,7 @@ func (r *AggSpreadToReaderRule) OnMatch(call *OptRuleCall) {
 		return
 	}
 
-	if agg.schema.HasHeimdallCall() && !agg.Schema().Options().IsGroupByAllDims() {
+	if agg.schema.HasCastorCall() && !agg.Schema().Options().IsGroupByAllDims() {
 		return
 	}
 
@@ -1279,12 +1279,12 @@ func (r *SlideWindowSpreadRule) OnMatch(call *OptRuleCall) {
 	call.TransformTo(clone)
 }
 
-type HeimdallAggCutRule struct {
+type CastorAggCutRule struct {
 	OptRuleBase
 }
 
-func NewHeimdallAggCutRule(description string) *HeimdallAggCutRule {
-	mr := &HeimdallAggCutRule{}
+func NewCastorAggCutRule(description string) *CastorAggCutRule {
+	mr := &CastorAggCutRule{}
 	if description == "" {
 		description = GetType(mr)
 	}
@@ -1296,16 +1296,16 @@ func NewHeimdallAggCutRule(description string) *HeimdallAggCutRule {
 	return mr
 }
 
-func (r *HeimdallAggCutRule) Catagory() OptRuleCatagory {
+func (r *CastorAggCutRule) Catagory() OptRuleCatagory {
 	return RULE_HEIMADLL_PUSHDOWN
 }
 
-func (r *HeimdallAggCutRule) ToString() string {
+func (r *CastorAggCutRule) ToString() string {
 	return GetTypeName(r)
 }
 
-func (r *HeimdallAggCutRule) Equals(rhs OptRule) bool {
-	rr, ok := rhs.(*HeimdallAggCutRule)
+func (r *CastorAggCutRule) Equals(rhs OptRule) bool {
+	rr, ok := rhs.(*CastorAggCutRule)
 
 	if !ok {
 		return false
@@ -1322,14 +1322,14 @@ func (r *HeimdallAggCutRule) Equals(rhs OptRule) bool {
 	return false
 }
 
-func (r *HeimdallAggCutRule) OnMatch(call *OptRuleCall) {
+func (r *CastorAggCutRule) OnMatch(call *OptRuleCall) {
 	agg, ok := call.Node(0).(*LogicalAggregate)
 	if !ok {
 		logger.GetLogger().Warn("LogicalAggregate of Heimdal OnMatch failed, OptRuleCall Node 0 isn't *LogicalAggregate")
 		return
 	}
 
-	if !agg.Schema().HasHeimdallCall() {
+	if !agg.Schema().HasCastorCall() {
 		return
 	}
 

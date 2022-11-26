@@ -22,6 +22,7 @@ import (
 
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/engine/op"
+	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/influx/query"
 )
@@ -562,9 +563,9 @@ func (qs *QuerySchema) CountDistinct() *influxql.Call {
 	return qs.countDistinct
 }
 
-func (qs *QuerySchema) HasHeimdallCall() bool {
+func (qs *QuerySchema) HasCastorCall() bool {
 	for _, v := range qs.calls {
-		if v.Name == "heimdall_detect" {
+		if v.Name == "castor" {
 			return true
 		}
 	}
@@ -699,6 +700,9 @@ func (qs *QuerySchema) mapSymbol(key string, expr influxql.Expr) {
 		symbolName := fmt.Sprintf("val%d", qs.i)
 		typ, err := qs.deriveType(expr)
 		if err != nil {
+			if errno.Equal(err, errno.DtypeNotSupport) {
+				panic(err)
+			}
 			panic(fmt.Errorf("QuerySchema mapSymbol get derive type failed, %v", err.Error()))
 		}
 

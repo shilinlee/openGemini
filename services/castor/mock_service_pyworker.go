@@ -13,15 +13,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package heimdall
+package castor
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 
+	"github.com/BurntSushi/toml"
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/openGemini/openGemini/lib/config"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func mockPyworkerHandleData(recs []array.Record, conn net.Conn) error {
@@ -52,7 +57,7 @@ func mockPyworkerHandleData(recs []array.Record, conn net.Conn) error {
 		valid := []bool{true}
 		b.Field(0).(*array.Float64Builder).AppendValues([]float64{0}, valid)
 		b.Field(1).(*array.Int64Builder).AppendValues([]int64{0}, valid)
-		if err := WriteData(b.NewRecord(), conn); err != nil {
+		if err := writeData(b.NewRecord(), conn); err != nil {
 			return err
 		}
 	}
@@ -74,15 +79,9 @@ func MockPyWorker(addr string) error {
 		if err = listener.Close(); err != nil {
 			return
 		}
-		connType := make([]byte, len(BATCH))
-		for string(connType) != string(BATCH) {
-			if _, err = conn.Read(connType); err != nil {
-				return
-			}
-		}
 		for {
 			readerBuf := bufio.NewReader(conn)
-			recs, err := ReadData(readerBuf)
+			recs, err := readData(readerBuf)
 			if err != nil {
 				return
 			}
@@ -94,7 +93,7 @@ func MockPyWorker(addr string) error {
 	return nil
 }
 
-// mock heimdall response
+// mock castor response
 func BuildNumericRecord() array.Record {
 	metaKeys := []string{"t", string(AnomalyNum), string(MessageType), string(TaskID)}
 	metaVals := []string{"1", "1", string(DATA), ""}
@@ -118,4 +117,32 @@ func BuildNumericRecord() array.Record {
 
 	rec := b.NewRecord()
 	return rec
+}
+
+type mockCastorConf struct {
+	Analysis config.Castor `toml:"castor"`
+}
+
+// use default configuration and replace logger with observable one for test
+func MockCastorService(port int) (*Service, *observer.ObservedLogs, error) {
+	confStr := fmt.Sprintf(`
+	[castor]
+		enabled = true
+		pyworker-addr = ["127.0.0.1:%d"]
+		connect-pool-size = 1
+		result-wait-timeout = 10
+	[castor.detect]
+		algorithm = ['DIFFERENTIATEAD']
+		config_filename = ['detect_base']
+	`, port)
+	conf := mockCastorConf{config.Castor{}}
+	toml.Decode(confStr, &conf)
+	srv := NewService(conf.Analysis)
+	observedZapCore, observedLogs := observer.New(zap.DebugLevel)
+	observedLogger := zap.New(observedZapCore)
+	srv.Logger.SetZapLogger(observedLogger)
+	if err := srv.Open(); err != nil {
+		return nil, nil, err
+	}
+	return srv, observedLogs, nil
 }

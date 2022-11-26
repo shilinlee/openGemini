@@ -19,11 +19,13 @@ package executor
 import (
 	_ "net/http/pprof"
 	"testing"
+	"time"
 
 	"github.com/influxdata/influxdb/pkg/testing/assert"
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
+	"github.com/openGemini/openGemini/services/castor"
 )
 
 func TestMockTSDBSystem(t *testing.T) {
@@ -173,7 +175,7 @@ func TestMockTSDBSystem(t *testing.T) {
 	}
 }
 
-func TestUDFHeimdall(t *testing.T) {
+func TestUDFCastor(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		sql           string
@@ -183,8 +185,8 @@ func TestUDFHeimdall(t *testing.T) {
 		intoValidator func(database, retentionPolicy string, points []influx.Row)
 	}{
 		{
-			name: "select heimdall_detect(v_int) from mst",
-			sql:  "SELECT heimdall_detect(v_int) as v_int from db0.rp0.mst0",
+			name: "select castor(v_int, algorithm, algoConf, processType) from mst",
+			sql:  "SELECT castor(v_int, 'DIFFERENTIATEAD', 'detect_base', 'detect') as v_int from db0.rp0.mst0",
 			ddl: func(c *Catalog) error {
 				db, err := c.CreateDatabase("db0", "rp0")
 				if err != nil {
@@ -217,8 +219,8 @@ func TestUDFHeimdall(t *testing.T) {
 			validator: func(results []Chunk) {
 				assert.Equal(t, len(results), 1)
 				assert.Equal(t, results[0].Name(), "mst0")
-				assert.Equal(t, results[0].Time(), []int64{1, 2, 3, 4, 5})
-				assert.Equal(t, results[0].Columns()[0].IntegerValues(), []int64{1, 2, 3, 4, 5})
+				assert.Equal(t, results[0].Time(), []int64{0})
+				assert.Equal(t, results[0].Columns()[1].IntegerValues(), []int64{0})
 			},
 		},
 	} {
@@ -230,6 +232,19 @@ func TestUDFHeimdall(t *testing.T) {
 			if err := tsdb.DML(tc.dml); err != nil {
 				t.Error(err)
 			}
+
+			srv, _, err := castor.MockCastorService(6662)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srv.Close()
+
+			if err := castor.MockPyWorker(srv.Config.PyWorkerAddr[0]); err != nil {
+				t.Error(err)
+			}
+			wait := 8 * time.Second // wait for service to build connection
+			time.Sleep(wait)
+
 			if err := tsdb.ExecSQL(tc.sql, tc.validator); err != nil {
 				t.Error(err)
 			}
