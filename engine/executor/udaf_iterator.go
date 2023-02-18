@@ -1,3 +1,19 @@
+/*
+Copyright 2022 Huawei Cloud Computing Technologies Co., Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package executor
 
 import (
@@ -5,7 +21,7 @@ import (
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 )
 
-const maxRow = 10000
+const UDAFMaxRow = 10000
 
 type WideReduce func(input []Chunk, out Chunk, p ...interface{}) error
 
@@ -52,8 +68,8 @@ func (r *WideIterator) Next(ie *IteratorEndpoint, p *IteratorParams) {
 	}
 
 	r.rowCnt += inChunk.NumberOfRows()
-	if r.rowCnt > maxRow {
-		p.err = errno.NewError(errno.DataTooMuch, maxRow, r.rowCnt)
+	if r.rowCnt > UDAFMaxRow {
+		p.err = errno.NewError(errno.DataTooMuch, UDAFMaxRow, r.rowCnt)
 		r.isErrHappend = true
 		return
 	}

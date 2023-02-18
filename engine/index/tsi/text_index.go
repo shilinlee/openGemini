@@ -50,17 +50,19 @@ func (idx *TextIndex) Close() error {
 	return nil
 }
 
-func (idx *TextIndex) CreateIndexIfNotExists(primaryIndex PrimaryIndex, row *influx.Row, version uint16) (uint64, error) {
+func (idx *TextIndex) CreateIndexIfNotExists(primaryIndex PrimaryIndex, row *influx.Row) (uint64, error) {
 	//fmt.Println("TextIndex CreateIndexIfNotExists")
 	// TODO
 	return 0, nil
 }
 
-func (idx *TextIndex) Search(primaryIndex PrimaryIndex, span *tracing.Span, name []byte, opt *query.ProcessorOptions) ([][]byte, error) {
-	sids, _ := primaryIndex.GetPrimaryKeys(name, opt)
-	fmt.Println("TextIndex Search", len(sids))
+func (idx *TextIndex) Search(primaryIndex PrimaryIndex, span *tracing.Span, name []byte, opt *query.ProcessorOptions, groups interface{}) (GroupSeries, error) {
 	// TODO
-	return nil, nil
+	groupSeries, ok := groups.(GroupSeries)
+	if !ok {
+		return nil, fmt.Errorf("not a group series: %v", groups)
+	}
+	return groupSeries, nil
 }
 
 func (idx *TextIndex) Delete(primaryIndex PrimaryIndex, name []byte, condition influxql.Expr, tr TimeRange) error {
@@ -70,8 +72,11 @@ func (idx *TextIndex) Delete(primaryIndex PrimaryIndex, name []byte, condition i
 	return nil
 }
 
-func TextIndexHandler(opt *Options, primaryIndex PrimaryIndex) *IndexAmRoutine {
-	index, _ := NewTextIndex(opt)
+func TextIndexHandler(opt *Options, primaryIndex PrimaryIndex) (*IndexAmRoutine, error) {
+	index, err := NewTextIndex(opt)
+	if err != nil {
+		return nil, err
+	}
 	return &IndexAmRoutine{
 		amKeyType:    Text,
 		amOpen:       TextOpen,
@@ -82,7 +87,7 @@ func TextIndexHandler(opt *Options, primaryIndex PrimaryIndex) *IndexAmRoutine {
 		amClose:      TextClose,
 		index:        index,
 		primaryIndex: primaryIndex,
-	}
+	}, nil
 }
 
 func TextBuild(relation *IndexRelation) error {
@@ -94,16 +99,16 @@ func TextOpen(index interface{}) error {
 	return textIndex.Open()
 }
 
-func TextInsert(index interface{}, primaryIndex PrimaryIndex, name []byte, row interface{}, version uint16) (uint64, error) {
+func TextInsert(index interface{}, primaryIndex PrimaryIndex, name []byte, row interface{}) (uint64, error) {
 	textIndex := index.(*TextIndex)
 	insertRow := row.(*influx.Row)
-	return textIndex.CreateIndexIfNotExists(primaryIndex, insertRow, version)
+	return textIndex.CreateIndexIfNotExists(primaryIndex, insertRow)
 }
 
 // upper function call should analyze result
-func TextScan(index interface{}, primaryIndex PrimaryIndex, span *tracing.Span, name []byte, opt *query.ProcessorOptions) (interface{}, error) {
+func TextScan(index interface{}, primaryIndex PrimaryIndex, span *tracing.Span, name []byte, opt *query.ProcessorOptions, groups interface{}) (interface{}, error) {
 	textIndex := index.(*TextIndex)
-	return textIndex.Search(primaryIndex, span, name, opt)
+	return textIndex.Search(primaryIndex, span, name, opt, groups)
 }
 
 func TextDelete(index interface{}, primaryIndex PrimaryIndex, name []byte, condition influxql.Expr, tr TimeRange) error {

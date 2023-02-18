@@ -83,13 +83,12 @@ func newTransport(node *Node, typ uint8, callback Callback, timeout time.Duratio
 
 	p := node.GetPool()
 	if p == nil || !p.Available() {
-		node.Close()
 		return nil, errno.NewError(errno.NoConnectionAvailable, node.nodeID, node.address)
 	}
 
 	mc, err := p.Get()
 	if err != nil {
-		node.Close()
+		p.Close()
 		return nil, err
 	}
 	mc.SetTimeout(timeout)
@@ -123,20 +122,20 @@ func (s *Transport) FinishAnalyze() {
 
 func (s *Transport) Send(data Codec) error {
 	if err := s.requester.Request(data); err != nil {
-		s.node.Close()
+		s.pool.Close()
 		return err
 	}
 	return nil
 }
 
 func (s *Transport) Wait() error {
-	defer s.release()
-
 	err := s.responser.Apply()
 	if err != nil {
+		spdy.HandleError(s.responser.Session().Close())
 		return err
 	}
 
+	s.release()
 	return nil
 }
 

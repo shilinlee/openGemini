@@ -14,6 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+/*
+Copyright (c) 2013-2016 Errplane Inc.
+This code is originally from: https://github.com/VictoriaMetrics/VictoriaMetrics/tree/1.37.1/lib/storage/tag_filters_test.go
+*/
+
 package tsi
 
 import (
@@ -120,4 +125,13 @@ func TestGetRegexpPrefix(t *testing.T) {
 
 	// The transformed regexp mustn't match barx
 	f(t, "(foo|bar$)x*", "", "(?:foo|(?-s:.)*bar(?-m:$))x*")
+}
+
+func TestTagFilterMatchSuffix(t *testing.T) {
+	name := []byte("mst")
+	key := []byte("key")
+	var tf tagFilter
+
+	tf.Init(name, key, []byte(`192\.168\.1\.2`), false, true)
+	assert.Equal(t, tf.reSuffixMatch([]byte("192.168.1.2")), true)
 }

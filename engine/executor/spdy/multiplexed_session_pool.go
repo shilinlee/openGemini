@@ -54,7 +54,7 @@ func NewMultiplexedSessionPool(cfg config.Spdy, network string, address string) 
 		network:   network,
 		address:   address,
 		conn:      nil,
-		mspLogger: logger.NewLogger(errno.ModuleNetwork).With(zap.String("SPDY", "MultiplexedSessionPool")),
+		mspLogger: logger.NewLogger(errno.ModuleNetwork),
 	}
 	return pool
 }
@@ -83,7 +83,7 @@ func (c *MultiplexedSessionPool) Dial() error {
 	c.conn = NewMultiplexedConnection(c.cfg, conn, true)
 	go func() {
 		if err := c.conn.ListenAndServed(); err != nil {
-			c.mspLogger.Warn(err.Error())
+			c.mspLogger.Warn(err.Error(), zap.String("SPDY", "MultiplexedSessionPool"))
 		}
 	}()
 
@@ -166,11 +166,14 @@ func (c *MultiplexedSessionPool) create() (*MultiplexedSession, error) {
 
 func (c *MultiplexedSessionPool) Close() {
 	c.closeGuard.Lock()
-	if c.closed {
-		return
-	}
+	closed := c.closed
 	c.closed = true
 	c.closeGuard.Unlock()
+
+	if closed {
+		return
+	}
+
 	c.wg.Done()
 	HandleError(c.conn.Close())
 	close(c.queue)
