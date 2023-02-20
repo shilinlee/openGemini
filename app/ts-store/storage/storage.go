@@ -171,7 +171,7 @@ func OpenStorage(path string, node *metaclient.Node, cli *metaclient.Client, con
 	opt.WalSyncInterval = time.Duration(conf.Data.WalSyncInterval)
 	opt.WalEnabled = conf.Data.WalEnabled
 	opt.WalReplayParallel = conf.Data.WalReplayParallel
-	opt.WalReplayAsync = conf.Data.WalReplayParallel
+	opt.WalReplayAsync = conf.Data.WalReplayAsync
 	opt.CompactionMethod = conf.Data.CompactionMethod
 	opt.OpenShardLimit = conf.Data.OpenShardLimit
 	opt.DownSampleWriteDrop = conf.Data.DownSampleWriteDrop
