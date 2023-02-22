@@ -186,6 +186,7 @@ func (mt *mergeTool) getTSSPFiles(ctx *mergeContext) (*TSSPFiles, *TSSPFiles, er
 
 	unordered, err := mt.mts.getFilesByPath(ctx.mst, ctx.unordered.path, false)
 	if err != nil {
+		UnrefAll(order)
 		return nil, nil, err
 	}
 

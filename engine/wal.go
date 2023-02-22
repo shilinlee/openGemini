@@ -401,6 +401,15 @@ func consumeRecordParallel(ctx context.Context, mu *sync.Mutex, ptChs []chan []b
 	finish <- struct{}{}
 }
 
+// sendWal2ptChs sends the wal binary to the idx ptChs
+func (l *WAL) sendWal2ptChs(ctx context.Context, ptChs []chan []byte, idx int, binary []byte) {
+	select {
+	case <-ctx.Done():
+		l.log.Info("cancel replay wal", zap.Int("log writer", idx))
+	case ptChs[idx] <- binary:
+	}
+}
+
 func (l *WAL) productRecordParallel(ctx context.Context, mu *sync.Mutex, ptChs []chan []byte, errs *[]error) []string {
 	var wg sync.WaitGroup
 	var walFileNames []string
@@ -408,10 +417,10 @@ func (l *WAL) productRecordParallel(ctx context.Context, mu *sync.Mutex, ptChs [
 	for i := range l.logWriter {
 		go func(idx int) {
 			err := l.replayOnePartition(ctx, idx, func(binary []byte) error {
-				ptChs[idx] <- binary
+				l.sendWal2ptChs(ctx, ptChs, idx, binary)
 				return nil
 			})
-			ptChs[idx] <- nil
+			l.sendWal2ptChs(ctx, ptChs, idx, nil)
 			mu.Lock()
 			if err != nil {
 				*errs = append(*errs, err)

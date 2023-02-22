@@ -757,6 +757,7 @@ func Benchmark_WritePointRows(t *testing.B) {
 }
 
 func TestPointsWriter_InvalidMst(t *testing.T) {
+	streamDistribution = noStream
 	pw := NewPointsWriter(time.Second * 10)
 	mc := NewMockMetaClient()
 	mc.MeasurementFn = func(database string, rpName string, mstName string) (*meta2.MeasurementInfo, error) {

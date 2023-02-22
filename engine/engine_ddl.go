@@ -157,11 +157,10 @@ func (e *Engine) DropRetentionPolicy(db string, rp string, ptId uint32) error {
 	}
 	defer e.DbPTUnref(db, ptId)
 
-	if err := e.walkShards(db, rp, func(dbPTInfo *DBPTInfo, shardID uint64, sh Shard) error {
+	if err := e.deleteIndexes(db, ptId, rp, func(dbPTInfo *DBPTInfo, shardID uint64, sh Shard) error {
 		if err := sh.Close(); err != nil {
 			return err
 		}
-
 		dbPTInfo.mu.Lock()
 		delete(dbPTInfo.shards, shardID)
 		delete(dbPTInfo.newestRpShard, rp)

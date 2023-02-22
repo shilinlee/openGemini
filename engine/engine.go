@@ -606,8 +606,8 @@ func (e *Engine) CreateShard(db, rp string, ptId uint32, shardID uint64, timeRan
 			return err
 		}
 		dbPTInfo.shards[shardID] = sh
-		existShardID, ok := dbPTInfo.newestRpShard[rp]
-		if !ok || existShardID < shardID {
+		newestShardID, ok := dbPTInfo.newestRpShard[rp]
+		if !ok || newestShardID < shardID {
 			dbPTInfo.newestRpShard[rp] = shardID
 		}
 	}
@@ -777,36 +777,30 @@ func (e *Engine) dropDBPt(db string) {
 	}
 }
 
-func (e *Engine) walkShards(db, rp string, fn func(dbPTInfo *DBPTInfo, shardID uint64, sh Shard) error) error {
+func (e *Engine) deleteIndexes(db string, pt uint32, rp string, fn func(dbPTInfo *DBPTInfo, shardID uint64, sh Shard) error) error {
 	resC := make(chan error)
-	indexes := make(map[*DBPTInfo]map[uint64]struct{})
+	indexes := make(map[uint64]struct{})
 
-	e.mu.RLock()
-	dbPTInfos := e.DBPartitions[db]
-	e.mu.RUnlock()
-
+	dbPTInfo := e.getDBPTInfo(db, pt)
 	var n int
-	for _, dbPTInfo := range dbPTInfos {
-		indexes[dbPTInfo] = make(map[uint64]struct{})
-		for shardId := range dbPTInfo.shards {
-			if dbPTInfo.shards[shardId].RPName() != rp {
-				continue
-			}
-			indexID := dbPTInfo.shards[shardId].GetIndexBuild().GetIndexID()
-			if _, ok := dbPTInfo.indexBuilder[indexID]; ok {
-				indexes[dbPTInfo][indexID] = struct{}{}
-			}
-			n++
-
-			go func(info *DBPTInfo, id uint64, sh Shard) {
-				err := fn(info, id, sh)
-				if err != nil {
-					resC <- fmt.Errorf("shard %d: %s", id, err)
-					return
-				}
-				resC <- err
-			}(dbPTInfo, shardId, dbPTInfo.shards[shardId])
+	for shardId := range dbPTInfo.shards {
+		if dbPTInfo.shards[shardId].RPName() != rp {
+			continue
 		}
+		indexID := dbPTInfo.shards[shardId].GetIndexBuild().GetIndexID()
+		if _, ok := dbPTInfo.indexBuilder[indexID]; ok {
+			indexes[indexID] = struct{}{}
+		}
+		n++
+
+		go func(info *DBPTInfo, id uint64, sh Shard) {
+			err := fn(info, id, sh)
+			if err != nil {
+				resC <- fmt.Errorf("shard %d: %s", id, err)
+				return
+			}
+			resC <- err
+		}(dbPTInfo, shardId, dbPTInfo.shards[shardId])
 	}
 
 	var err error
@@ -822,21 +816,31 @@ func (e *Engine) walkShards(db, rp string, fn func(dbPTInfo *DBPTInfo, shardID u
 		return err
 	}
 
-	for dbPT, indexIds := range indexes {
-		for indexId := range indexIds {
-			dbPT.mu.RLock()
-			iBuilder := dbPT.indexBuilder[indexId]
-			dbPT.mu.RUnlock()
-			if e := iBuilder.Close(); e != nil {
-				err = e
-			} else {
-				dbPT.mu.Lock()
-				delete(dbPT.indexBuilder, indexId)
-				dbPT.mu.Unlock()
-			}
+	for index := range indexes {
+		if e := e.deleteOneIndex(dbPTInfo, index); e != nil {
+			err = e
 		}
 	}
+	return err
+}
 
+func (e *Engine) deleteOneIndex(dbPTInfo *DBPTInfo, indexId uint64) error {
+	dbPTInfo.mu.Lock()
+	iBuilder, ok := dbPTInfo.indexBuilder[indexId]
+	if !ok {
+		dbPTInfo.mu.Unlock()
+		return nil
+	}
+	dbPTInfo.pendingIndexDeletes[indexId] = struct{}{}
+	dbPTInfo.mu.Unlock()
+
+	err := iBuilder.Close()
+	dbPTInfo.mu.Lock()
+	defer dbPTInfo.mu.Unlock()
+	if err == nil {
+		delete(dbPTInfo.indexBuilder, indexId)
+	}
+	delete(dbPTInfo.pendingIndexDeletes, indexId)
 	return err
 }
 

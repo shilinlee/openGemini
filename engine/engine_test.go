@@ -404,6 +404,30 @@ func TestEngine_DropRetentionPolicy(t *testing.T) {
 	require.NoError(t, eng.DropRetentionPolicy("db0", "rp0", defaultPtId))
 }
 
+func TestEngine_DropRetentionPolicyErrorRP(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := initEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	res := make(chan error)
+	n := 0
+	n++
+	go func(db, rp string) {
+		res <- eng.DropRetentionPolicy(db, rp, defaultPtId)
+	}("db0", "rpx")
+
+	for i := 0; i < n; i++ {
+		err = <-res
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(res)
+}
+
 func TestEngine_DeleteIndex(t *testing.T) {
 	dir := t.TempDir()
 	eng, err := initEngine(dir)

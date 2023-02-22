@@ -155,19 +155,20 @@ func (rs Rows) Swap(i, j int) {
 type Row struct {
 	// if streamOnly is false, it means that the source table data of the stream will also be written,
 	// otherwise the source table data of the stream will not be written
-	StreamOnly    bool
-	Timestamp     int64
-	SeriesId      uint64
-	PrimaryId     uint64
-	Name          string // measurement name with version
-	Tags          PointTags
-	Fields        Fields
-	IndexKey      []byte
-	ShardKey      []byte
-	StreamId      []uint64 // it used to indicate that the data is shared by multiple streams
-	IndexOptions  IndexOptions
-	ColumnToIndex map[string]int // it indicates the sorted tagKey, fieldKey and index mapping relationship
-	HasTagArray   bool           // it used to indicate that the data contains tag array, 0:no; 1:yes, eg. tg1=[tv1,tv2,tv3]
+	StreamOnly              bool
+	Timestamp               int64
+	SeriesId                uint64
+	PrimaryId               uint64
+	Name                    string // measurement name with version
+	Tags                    PointTags
+	Fields                  Fields
+	IndexKey                []byte
+	ShardKey                []byte
+	StreamId                []uint64 // it used to indicate that the data is shared by multiple streams
+	IndexOptions            IndexOptions
+	ColumnToIndex           map[string]int // it indicates the sorted tagKey, fieldKey and index mapping relationship
+	HasTagArray             bool           // it used to indicate that the data contains tag array, 0:no; 1:yes, eg. tg1=[tv1,tv2,tv3]
+	ReadyBuildColumnToIndex bool
 }
 
 func (r *Row) Reset() {
@@ -186,6 +187,7 @@ func (r *Row) Reset() {
 	r.StreamOnly = false
 	r.ColumnToIndex = nil
 	r.HasTagArray = false
+	r.ReadyBuildColumnToIndex = false
 }
 
 // ReuseSet Reuse Field and Tag, compare with Reset
@@ -428,6 +430,7 @@ func FastUnmarshalMultiRows(src []byte, rows []Row, tagPool []Tag, fieldPool []F
 			rows = append(rows, Row{})
 		}
 		row := &rows[len(rows)-1]
+		row.HasTagArray = false
 		src, tagPool, fieldPool, indexOptionPool, indexKeyPool, err =
 			row.FastUnmarshalBinary(src, tagPool, fieldPool, indexOptionPool, indexKeyPool)
 		if err != nil {
@@ -536,6 +539,7 @@ func (r *Row) unmarshalTags(src []byte, tagpool []Tag) ([]byte, []Tag, error) {
 		}
 		src = src[2:]
 		tg.Value = bytesutil.ToUnsafeString(src[:vl])
+		tg.IsArray = false
 		if config.EnableTagArray {
 			if strings.HasPrefix(tg.Value, "[") && strings.HasSuffix(tg.Value, "]") {
 				tg.IsArray = true

@@ -135,8 +135,7 @@ type injestionCtx struct {
 	writeHelper     *writeHelper
 	aliveShardIdxes []int
 
-	stream                  *Stream
-	readyBuildColumnToIndex bool
+	stream *Stream
 }
 
 func (s *injestionCtx) Reset() {
@@ -174,7 +173,6 @@ func (s *injestionCtx) Reset() {
 	s.minTime = 0
 	s.aliveShardIdxes = s.aliveShardIdxes[:0]
 	s.shardKeyInfo = nil
-	s.readyBuildColumnToIndex = false
 }
 
 func (s *injestionCtx) initStreamDBs(length int) {
@@ -290,7 +288,7 @@ func (s *injestionCtx) getDstSis() *[]*meta2.StreamInfo {
 	return &s.streamInfos
 }
 
-func (s *injestionCtx) buildColumnToIndex(r *influx.Row) {
+func buildColumnToIndex(r *influx.Row) {
 	if r.ColumnToIndex == nil {
 		r.ColumnToIndex = make(map[string]int)
 	}
@@ -303,7 +301,7 @@ func (s *injestionCtx) buildColumnToIndex(r *influx.Row) {
 		r.ColumnToIndex[stringinterner.InternSafe(r.Fields[i].Key)] = index
 		index++
 	}
-	s.readyBuildColumnToIndex = true
+	r.ReadyBuildColumnToIndex = true
 }
 
 func (s *injestionCtx) getWriteHelpers() *[]*writeHelper {
@@ -581,12 +579,13 @@ func (w *PointsWriter) routeAndMapOriginRows(
 		}
 
 		originName := r.Name
-		ctx.ms, pErr = wh.createMeasurement(database, retentionPolicy, r.Name)
-		if pErr != nil {
-			if errno.Equal(pErr, errno.InvalidMeasurement) {
-				w.logger.Error("invalid measurement", zap.Error(pErr))
-				partialErr = pErr
+		ctx.ms, err = wh.createMeasurement(database, retentionPolicy, r.Name)
+		if err != nil {
+			if errno.Equal(err, errno.InvalidMeasurement) {
+				w.logger.Error("invalid measurement", zap.Error(err))
+				partialErr = err
 				dropped++
+				err = nil
 				continue
 			}
 			return
@@ -608,9 +607,9 @@ func (w *PointsWriter) routeAndMapOriginRows(
 		atomic.AddInt64(&statistics.HandlerStat.WriteUpdateSchemaDuration, time.Since(start).Nanoseconds())
 
 		if len(*ctx.getDstSis()) > 0 {
-			ctx.buildColumnToIndex(r)
+			buildColumnToIndex(r)
 		}
-		updateIndexOptions(r, ctx.ms.GetIndexRelation(), ctx)
+		updateIndexOptions(r, ctx.ms.GetIndexRelation())
 
 		start = time.Now()
 		err, pErr, sh = w.updateShardGroupAndShardKey(database, retentionPolicy, r, ctx, false, nil, 0, false)
@@ -832,7 +831,7 @@ func (w *PointsWriter) updateShardGroupAndShardKey(
 				return
 			}
 		} else {
-			if ctx.readyBuildColumnToIndex {
+			if r.ReadyBuildColumnToIndex {
 				err = r.UnmarshalShardKeyByTagOp((*si).ShardKey)
 			} else {
 				err = r.UnmarshalShardKeyByTag((*si).ShardKey)
@@ -873,10 +872,10 @@ func (w *PointsWriter) updateShardGroupAndShardKey(
 	return
 }
 
-func updateIndexOptions(r *influx.Row, indexRelation meta2.IndexRelation, ctx *injestionCtx) {
+func updateIndexOptions(r *influx.Row, indexRelation meta2.IndexRelation) {
 	r.IndexOptions = r.IndexOptions[:0]
-	if len(indexRelation.IndexList) > 0 && !ctx.readyBuildColumnToIndex {
-		ctx.buildColumnToIndex(r)
+	if len(indexRelation.IndexList) > 0 && !r.ReadyBuildColumnToIndex {
+		buildColumnToIndex(r)
 	}
 	for k, indexList := range indexRelation.IndexList {
 		il, ok := selectIndexList(r.ColumnToIndex, indexList.IList)

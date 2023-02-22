@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -375,14 +376,14 @@ func (s *shard) createGroupCursors(span *tracing.Span, schema *executor.QuerySch
 	errs := make([]error, parallelism)
 
 	work := func(start, subTagSetN int, parallel bool, wg *sync.WaitGroup, tagSet *tsi.TagSetInfo) {
-		if parallel {
-			defer wg.Done()
-		}
 		defer func() {
+			if parallel {
+				wg.Done()
+			}
 			if r := recover(); r != nil {
-				err := errno.NewError(errno.LogicalPlainBuildFailInShard, "failed")
+				err := errno.NewError(errno.LogicalPlainBuildFailInShard, r)
 				errs[start] = err
-				s.log.Error(err.Error())
+				s.log.Error(err.Error(), zap.String("stack", string(debug.Stack())))
 			}
 		}()
 		groupIdx := (startGroupIdx + start) % parallelism
@@ -446,28 +447,43 @@ func (s *shard) createGroupCursors(span *tracing.Span, schema *executor.QuerySch
 	}
 
 	if span != nil {
-		for i := range result {
-			gCursor := result[i].(*groupCursor)
-			sidCnt := 0
-			for j := range gCursor.tagSetCursors {
-				if enableFileCursor {
-					sidCnt += 1
-				} else {
-					tagSetGroup := gCursor.tagSetCursors[j].(*tagSetCursor)
-					sidCnt += len(tagSetGroup.keyCursors)
-				}
-			}
-			if gCursor.span != nil {
-				gCursor.span.SetNameValue(fmt.Sprintf("tagsets=%d,sid=%d", len(gCursor.tagSetCursors), sidCnt))
-				gCursor.span.Finish()
-			}
-		}
+		analyzeCursor(result, enableFileCursor)
 	}
 	if len(result) > 0 {
 		return result, nil
 	}
 
 	return nil, nil
+}
+
+func analyzeCursor(cur []comm.KeyCursor, enableFileCursor bool) {
+	var gCursor *groupCursor
+	var tagSetGroup *tagSetCursor
+	var ok bool
+
+	for i := range cur {
+		gCursor, ok = cur[i].(*groupCursor)
+		if !ok {
+			continue
+		}
+
+		sidCnt := 0
+		for j := range gCursor.tagSetCursors {
+			if enableFileCursor {
+				sidCnt += 1
+			} else {
+				tagSetGroup, ok = gCursor.tagSetCursors[j].(*tagSetCursor)
+				if !ok {
+					continue
+				}
+				sidCnt += len(tagSetGroup.keyCursors)
+			}
+		}
+		if gCursor.span != nil {
+			gCursor.span.SetNameValue(fmt.Sprintf("tagsets=%d,sid=%d", len(gCursor.tagSetCursors), sidCnt))
+			gCursor.span.Finish()
+		}
+	}
 }
 
 func (s *shard) CreateTagSetInSerial(work func(int, int, bool, *sync.WaitGroup, *tsi.TagSetInfo), subTagSetN int, tagSet *tsi.TagSetInfo) {
