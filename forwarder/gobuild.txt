@@ -1,0 +1,5 @@
+error
+# github.com/openGemini/openGemini-forwarder/dag
+dag/dag.go:45:20: invalid operation: cannot call non-function v (variable of type node.Node)
+dag/dag.go:49:21: invalid operation: cannot call non-function v (variable of type node.Node)
+dag/dag.go:53:21: invalid operation: cannot call non-function v (variable of type node.Node)
