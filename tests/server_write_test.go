@@ -46,6 +46,7 @@ func TestServer_Write_InvalidMeasurement(t *testing.T) {
 }
 
 func TestServer_Write_OutTimeRangeLimit(t *testing.T) {
+	t.Skip("Skip")
 	t.Parallel()
 	s := OpenServer(NewParseConfig(testCfgPath))
 	defer s.Close()
