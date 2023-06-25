@@ -1,6 +1,9 @@
 # Make sure to check the documentation at https://goreleaser.com
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 
+env:
+  - OWNER=openGemini
+
 before:
   hooks:
     # You may remove this if you don't use go modules.
@@ -21,7 +24,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
   - id: "ts-meta"
@@ -38,7 +41,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
   - id: "ts-monitor"
@@ -55,7 +58,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
   - id: "ts-server"
@@ -72,7 +75,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
   - id: "ts-sql"
@@ -89,7 +92,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
   - id: "ts-store"
@@ -106,7 +109,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.Commit}} -X main.TsBuildTime={{.Date}}
+      - -s -w -X main.TsVersion={{.Tag}} -X main.TsBranch={{.Branch}} -X main.TsCommit={{.FullCommit}} -X main.TsBuildTime={{.Date}}
     env:
       - CGO_ENABLED=0
 archives:
@@ -145,15 +148,47 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
-      - "^revert:"
-#      - "^chore:"
+      # - "^revert:"
+      - "^chore:"
       - "^ci:"
 
 release:
   github:
   prerelease: auto
 
-# The lines beneath this are called `modelines`. See `:help modeline`
-# Feel free to remove those if you don't want/use them.
-# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
-# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+dockers:
+  - id: opengemini-k8s
+    ids:
+      - ts-meta
+      - ts-sql
+      - ts-store
+    image_templates:
+#      - "{{ tolower .Env.OWNER }}db/opengemini-k8s:latest"
+#      - "{{ tolower .Env.OWNER }}db/opengemini-k8s:{{ .Tag }}"
+      - "gcr.io/shilinlee/opengemini-k8s:latest"
+      - "gcr.io/shilinlee/opengemini-k8s:{{ .Tag }}"
+    dockerfile: ./docker/Dockerfile
+    extra_files:
+      - docker/scripts/entrypoint.sh
+  - id: opengemini-server
+    ids:
+      - ts-server
+    image_templates:
+#      - "{{ tolower .Env.OWNER }}db/opengemini-server:latest"
+#      - "{{ tolower .Env.OWNER }}db/opengemini-server:{{ .Tag }}"
+      - "gcr.io/shilinlee/opengemini-server:latest"
+      - "gcr.io/shilinlee/opengemini-server:{{ .Tag }}"
+    dockerfile: ./docker/server/Dockerfile
+    extra_files:
+      - config/openGemini.singlenode.conf
+      - docker/server/entrypoint.sh
+
+docker_manifests:
+  - name_template: "gcr.io/shilinlee/opengemini-server:latest"
+    image_templates:
+      - "gcr.io/shilinlee/opengemini-server:latest-amd64"
+      - "gcr.io/shilinlee/opengemini-server:latest-arm64v8"
+  - name_template: "gcr.io/shilinlee/opengemini-server:{{ .Tag }}"
+    image_templates:
+      - "gcr.io/shilinlee/opengemini-server:{{ .Tag }}-amd64"
+      - "gcr.io/shilinlee/opengemini-server:{{ .Tag }}-arm64v8"

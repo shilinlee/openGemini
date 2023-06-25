@@ -1,12 +1,7 @@
-FROM openeuler/openeuler
+FROM alpine:3.17
 
-RUN mkdir -p /opt/openGemini/bin
-RUN mkdir -p /opt/openGemini/scripts
+ADD usr/bin/ts-cli usr/bin/ts-meta usr/bin/ts-sql usr/bin/ts-store /usr/local/bin/
 
-COPY bin/ts-* /opt/openGemini/bin/
-COPY scripts/*.sh /opt/openGemini/scripts/
+COPY docker/scripts/entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /opt/openGemini/bin/*
-RUN chmod +x /opt/openGemini/scripts/*
-
-ENTRYPOINT ["/opt/openGemini/scripts/start.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

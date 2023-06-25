@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-sed -i 's#/tmp/openGemini/#/opt/openGemini/#g' $OPENGEMINI_CONFIG
-sed -i 's#/opt/openGemini/logs/#/var/log/openGemini/#g' $OPENGEMINI_CONFIG
+sed -i 's#/tmp/openGemini/#/var/lib/openGemini/#g' $OPENGEMINI_CONFIG
+sed -i 's#/var/lib/openGemini/logs/#/var/log/openGemini/#g' $OPENGEMINI_CONFIG
 
-localAddr=`/sbin/ifconfig -a|grep inet|grep -v 127.0.0.1|grep -v inet6|awk '{print $2;exit}'|tr -d "addr:"`
-sed -i "s/127.0.0.1/$localAddr/g" $OPENGEMINI_CONFIG
+sed -i 's/bind-address = "127.0.0.1:8086"/bind-address = "0.0.0.0:8086"/g' $OPENGEMINI_CONFIG
+sed -i 's/bind-address = "127.0.0.1:8087"/bind-address = "0.0.0.0:8087"/g' $OPENGEMINI_CONFIG
 
-ts-server -config $OPENGEMINI_CONFIG | tee /var/log/openGemini/server_extra.log
+ts-server -config $OPENGEMINI_CONFIG
