@@ -21,6 +21,7 @@ import (
 	"io"
 
 	"github.com/openGemini/openGemini/lib/bufferpool"
+	"github.com/openGemini/openGemini/lib/fileops"
 	"github.com/openGemini/openGemini/lib/numberenc"
 	"go.uber.org/zap"
 )
@@ -40,17 +41,13 @@ func (mb *MemBlock) CopyBlocks(src MemoryReader) {
 	dataBlocks := src.DataBlocks()
 	if len(dataBlocks) > 0 {
 		mb.ReserveDataBlock(len(dataBlocks))
-		for i := range dataBlocks {
-			mb.data = append(mb.data, dataBlocks[i])
-		}
+		mb.data = append(mb.data, dataBlocks...)
 	}
 
 	metaBlocks := src.MetaBlocks()
 	if len(metaBlocks) > 0 {
 		mb.ReserveMetaBlock(len(metaBlocks))
-		for i := range metaBlocks {
-			mb.chunkMetas = append(mb.chunkMetas, metaBlocks[i])
-		}
+		mb.chunkMetas = append(mb.chunkMetas, metaBlocks...)
 	}
 
 	if len(mb.data) > 0 {
@@ -87,7 +84,7 @@ func (mb *MemBlock) ReadDataBlock(offset int64, size uint32, dstPtr *[]byte) ([]
 	return buf, nil
 }
 
-func (mb *MemBlock) loadDataBlock(dr DiskFileReader, tr *Trailer) error {
+func (mb *MemBlock) loadDataBlock(dr fileops.BasicFileReader, tr *Trailer) error {
 	var pos int64
 	var err error
 
@@ -126,7 +123,7 @@ func (mb *MemBlock) loadDataBlock(dr DiskFileReader, tr *Trailer) error {
 	return err
 }
 
-func (mb *MemBlock) loadMetaBlock(dr DiskFileReader, metaIndexItems []MetaIndex) error {
+func (mb *MemBlock) loadMetaBlock(dr fileops.BasicFileReader, metaIndexItems []MetaIndex) error {
 	var err error
 	var buf []byte
 
@@ -161,7 +158,7 @@ func (mb *MemBlock) loadMetaBlock(dr DiskFileReader, metaIndexItems []MetaIndex)
 	return nil
 }
 
-func (mb *MemBlock) LoadIntoMemory(dr DiskFileReader, tr *Trailer, metaIndexItems []MetaIndex) error {
+func (mb *MemBlock) LoadIntoMemory(dr fileops.BasicFileReader, tr *Trailer, metaIndexItems []MetaIndex) error {
 	if CacheMetaInMemory() {
 		if err := mb.loadMetaBlock(dr, metaIndexItems); err != nil {
 			log.Error("load meta fail", zap.String("file", dr.Name()), zap.Error(err))

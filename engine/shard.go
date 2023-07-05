@@ -26,7 +26,6 @@ import (
 	"hash/crc32"
 	"math"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -38,16 +37,19 @@ import (
 	"github.com/openGemini/openGemini/engine/executor"
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/engine/immutable"
+	"github.com/openGemini/openGemini/engine/immutable/colstore"
 	"github.com/openGemini/openGemini/engine/index/ski"
+	"github.com/openGemini/openGemini/engine/index/sparseindex"
 	"github.com/openGemini/openGemini/engine/index/tsi"
 	"github.com/openGemini/openGemini/engine/mutable"
+	"github.com/openGemini/openGemini/lib/binaryfilterfunc"
 	"github.com/openGemini/openGemini/lib/bucket"
 	"github.com/openGemini/openGemini/lib/bufferpool"
+	"github.com/openGemini/openGemini/lib/config"
 	"github.com/openGemini/openGemini/lib/cpu"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/fileops"
 	"github.com/openGemini/openGemini/lib/interruptsignal"
-	"github.com/openGemini/openGemini/lib/logger"
 	Log "github.com/openGemini/openGemini/lib/logger"
 	"github.com/openGemini/openGemini/lib/metaclient"
 	"github.com/openGemini/openGemini/lib/netstorage"
@@ -58,7 +60,6 @@ import (
 	"github.com/openGemini/openGemini/open_src/github.com/savsgio/dictpool"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/influx/meta"
-	"github.com/openGemini/openGemini/open_src/influx/query"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
 	"github.com/pingcap/failpoint"
 	"go.uber.org/zap"
@@ -79,107 +80,194 @@ var (
 	maxDownSampleTaskNum int
 )
 
+type Storage interface {
+	WriteRows(s *shard, rows *influx.Rows, mw *mstWriteCtx) error   // line protocol
+	WriteCols(s *shard, cols *record.Record, mw *mstWriteCtx) error // native protocol
+	WriteIndex(s *shard, rows *influx.Rows, mw *mstWriteCtx) error
+	SetClient(client metaclient.MetaClient)
+	SetMstInfo(name string, mstInfo *meta.MeasurementInfo)
+}
+
+type tsstoreImpl struct {
+}
+
+func (storage *tsstoreImpl) WriteRows(s *shard, rows *influx.Rows, mw *mstWriteCtx) error {
+	mmPoints := mw.getMstMap()
+	mw.initWriteRowsCtx(s.getLastFlushTime, s.addRowCountsBySid, nil)
+	return s.activeTbl.MTable.WriteRows(s.activeTbl, mmPoints, mw.writeRowsCtx)
+}
+
+func (storage *tsstoreImpl) WriteCols(s *shard, cols *record.Record, mw *mstWriteCtx) error {
+	return errors.New("not implement yet")
+}
+
+func (storage *tsstoreImpl) WriteIndex(s *shard, rows *influx.Rows, mw *mstWriteCtx) error {
+	err := s.writeIndex(*rows, mw, mw.getMstMap())
+	return err
+}
+
+func (storage *tsstoreImpl) SetClient(client metaclient.MetaClient) {
+	return
+}
+
+func (storage *tsstoreImpl) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {
+	return
+}
+
+type columnstoreImpl struct {
+	mu       sync.RWMutex
+	client   metaclient.MetaClient
+	mstsInfo map[string]*meta.MeasurementInfo // map[cpu-001]meta.MeasurementInfo
+}
+
+func newColumnstoreImpl() *columnstoreImpl {
+	return &columnstoreImpl{
+		mstsInfo: make(map[string]*meta.MeasurementInfo),
+	}
+}
+
+func (storage *columnstoreImpl) WriteRows(s *shard, rows *influx.Rows, mw *mstWriteCtx) error {
+	mmPoints := mw.getMstMap()
+	for i := 0; i < len(*rows); i++ {
+		if s.closed.Closed() {
+			return errno.NewError(errno.ErrShardClosed, s.ident.ShardID)
+		}
+		//skip StreamOnly data
+		if (*rows)[i].StreamOnly {
+			continue
+		}
+
+		//update mstsInfo
+		storage.mu.RLock()
+		_, ok := storage.mstsInfo[(*rows)[i].Name]
+		storage.mu.RUnlock()
+		if !ok {
+			err := storage.UpdateMstsInfo((*rows)[i], s.ident.OwnerDb, s.ident.Policy)
+			if err != nil {
+				return err
+			}
+		}
+		cloneRowToDict(mmPoints, mw, &(*rows)[i])
+	}
+	mw.initWriteRowsCtx(s.getLastFlushTime, s.addRowCountsBySid, storage.mstsInfo)
+	return s.activeTbl.MTable.WriteRows(s.activeTbl, mmPoints, mw.writeRowsCtx)
+}
+
+func (storage *columnstoreImpl) UpdateMstsInfo(row influx.Row, db, pr string) error {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	if _, ok := storage.mstsInfo[row.Name]; !ok {
+		mstInfo, err := storage.client.GetMeasurementInfoStore(db, pr, influx.GetOriginMstName(row.Name))
+		if err != nil {
+			return err
+		}
+		err = storage.checkMstInfo(mstInfo)
+		if err != nil {
+			return err
+		}
+		storage.SetMstInfo(row.Name, mstInfo)
+	}
+	return nil
+}
+
+func (storage *columnstoreImpl) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {
+	if mstInfo.EngineType == config.COLUMNSTORE {
+		storage.mstsInfo[name] = mstInfo
+	}
+}
+
+func (storage *columnstoreImpl) WriteCols(s *shard, cols *record.Record, mw *mstWriteCtx) error {
+	return errors.New("not implement yet")
+}
+
+func (storage *columnstoreImpl) WriteIndex(s *shard, rows *influx.Rows, mw *mstWriteCtx) error {
+	return nil
+}
+
+func (storage *columnstoreImpl) SetClient(client metaclient.MetaClient) {
+	storage.client = client
+}
+
+func (storage *columnstoreImpl) checkMstInfo(mstInfo *meta.MeasurementInfo) error {
+	if mstInfo == nil || mstInfo.ColStoreInfo.PrimaryKey == nil || mstInfo.ColStoreInfo.SortKey == nil {
+		return errors.New("the key component of mstInfo is nil")
+	}
+	return nil
+}
+
 type Shard interface {
-	WriteRows(rows []influx.Row, binaryRows []byte) error
-
+	// IO interface
+	WriteRows(rows []influx.Row, binaryRows []byte) error  // line protocol
+	WriteCols(cols record.Record, binaryRows []byte) error // native protocol
 	ForceFlush()
-
-	MaxTime() int64
-
-	Count() uint64
-
-	SeriesCount() int
-
-	Close() error
-
-	Ref()
-
-	UnRef()
-
+	WaitWriteFinish()
 	CreateLogicalPlan(ctx context.Context, sources influxql.Sources, schema *executor.QuerySchema) (hybridqp.QueryNode, error)
+	CreateCursor(ctx context.Context, schema *executor.QuerySchema) ([]comm.KeyCursor, error)
+	Scan(span *tracing.Span, schema *executor.QuerySchema, callBack func(num int64) error) (tsi.GroupSeries, int64, error)
+	ScanWithSparseIndex(ctx context.Context, schema *executor.QuerySchema, callBack func(num int64) error) (*executor.FileFragments, error)
+	NewShardKeyIdx(shardType, dataPath string, lockPath *string) error
 
-	LogicalPlanCost(sources influxql.Sources, opt query.ProcessorOptions) (hybridqp.LogicalPlanCost, error)
+	// admin
+	Open(client metaclient.MetaClient) error
+	Close() error
+	ChangeShardTierToWarm()
+	DropMeasurement(ctx context.Context, name string) error
+	GetSplitPoints(idxes []int64) ([]string, error) // only work for tsstore (depends on sid)
 
-	GetSplitPoints(idxes []int64) ([]string, error)
+	// get private member
+	GetDataPath() string
+	GetWalPath() string
+	GetDuration() *meta.DurationDescriptor
+	GetEngineType() config.EngineType
+	GetIdent() *meta.ShardIdentifier
+	GetID() uint64
+	GetRowCount() uint64
+	GetRPName() string
+	GetStatistics(buffer []byte) ([]byte, error)
+	GetMaxTime() int64
+	GetIndexBuilder() *tsi.IndexBuilder                                // only work for tsstore(tsi)
+	GetSeriesCount() int                                               // only work for tsstore
+	GetTableStore() immutable.TablesStore                              // used by downsample and test
+	GetTSSPFiles(mm string, isOrder bool) (*immutable.TSSPFiles, bool) // used by downsample and test
+	GetTier() uint64
+	IsExpired() bool
+	IsTierExpired() bool
 
-	Expired() bool
-
-	TierDurationExpired() (tier uint64, expired bool)
-
-	RPName() string
-
+	// downsample, only work for tsstore
+	CanDoDownSample() bool
+	DisableDownSample()
+	EnableDownSample()
+	GetShardDownSamplePolicy(policy *meta.DownSamplePolicyInfo) *meta.ShardDownSamplePolicyInfo
+	IsOutOfOrderFilesExist() bool
+	NewDownSampleTask(sdsp *meta.ShardDownSamplePolicyInfo, schema []hybridqp.Catalog, log *zap.Logger)
+	SetShardDownSampleLevel(i int)
+	SetMstInfo(name string, mstsInfo *meta.MeasurementInfo)
 	StartDownSample(taskID uint64, level int, sdsp *meta.ShardDownSamplePolicyInfo, meta interface {
 		UpdateShardDownSampleInfo(Ident *meta.ShardIdentifier) error
 	}) error
-
-	GetTSSPFiles(mm string, isOrder bool) (*immutable.TSSPFiles, bool)
-
-	GetIndexBuild() *tsi.IndexBuilder
-
-	GetID() uint64
-
-	Open(client metaclient.MetaClient) error
-
-	DataPath() string
-
-	WalPath() string
-
-	TableStore() immutable.TablesStore
-
-	Ident() *meta.ShardIdentifier
-
-	Duration() *meta.DurationDescriptor
-
-	ChangeShardTierToWarm()
-
-	SetWriteColdDuration(duration time.Duration)
-
-	SetMutableSizeLimit(size int64)
-
-	IsOutOfOrderFilesExist() bool
-
-	DropMeasurement(ctx context.Context, name string) error
-
-	Statistics(buffer []byte) ([]byte, error)
-
-	NewShardKeyIdx(shardType, dataPath string, lockPath *string) error
-
-	GetShardDownSamplePolicy(policy *meta.DownSamplePolicyInfo) *meta.ShardDownSamplePolicyInfo
-
-	SetShardDownSampleLevel(i int)
 	UpdateDownSampleOnShard(id uint64, level int)
-	NewDownSampleTask(sdsp *meta.ShardDownSamplePolicyInfo, schema []hybridqp.Catalog, log *zap.Logger)
 	UpdateShardReadOnly(meta interface {
 		UpdateShardDownSampleInfo(Ident *meta.ShardIdentifier) error
 	}) error
-	DisableDownSample()
-	EnableDownSample()
-	downSampleEnabled() bool
-	CanDoDownSample() bool
 
+	// compaction && merge, only work for tsstore
+	Compact() error
 	CompactionEnabled() bool
 	DisableCompAndMerge()
 	EnableCompAndMerge()
-	Compact() error
-	WaitWriteFinish()
-
-	SetIndexBuilder(builder *tsi.IndexBuilder)
-	CloseIndexBuilder() error
-	Scan(span *tracing.Span, schema *executor.QuerySchema, callBack func(num int64) error) (tsi.GroupSeries, int64, error)
-	CreateCursor(ctx context.Context, schema *executor.QuerySchema) ([]comm.KeyCursor, error)
 }
 
 type shard struct {
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	writeWg  sync.WaitGroup
-	opId     uint64
-	closed   *interruptsignal.InterruptSignal
-	dataPath string
-	tsspPath string
-	walPath  string
-	lock     *string
-	ident    *meta.ShardIdentifier
+	mu        sync.RWMutex
+	wg        sync.WaitGroup
+	writeWg   sync.WaitGroup
+	opId      uint64
+	closed    *interruptsignal.InterruptSignal
+	dataPath  string
+	filesPath string
+	walPath   string
+	lock      *string
+	ident     *meta.ShardIdentifier
 
 	cacheClosed        int32
 	isAsyncReplayWal   bool               // async replay wal switch
@@ -195,13 +283,15 @@ type shard struct {
 	immTables          immutable.TablesStore
 	indexBuilder       *tsi.IndexBuilder
 	skIdx              *ski.ShardKeyIndex
-	count              int64
+	sparseIndexReader  sparseindex.IndexReader
+	rowCount           int64
 	tmLock             sync.RWMutex
 	maxTime            int64
 	startTime          time.Time
 	endTime            time.Time
 	durationInfo       *meta.DurationDescriptor
-	log                *logger.Logger
+	log                *Log.Logger
+	droppedMst         sync.Map
 
 	tier uint64
 
@@ -209,19 +299,21 @@ type shard struct {
 
 	writeColdDuration time.Duration
 
-	mutableSizeLimit int64
-
 	forceFlush  bool
 	forceChan   chan struct{}
 	defaultTags map[string]string
 	fileStat    *statistics.FileStatistics
 
-	downSampleStatus        int
 	shardDownSampleTaskInfo *shardDownSampleTaskInfo
 
 	stopDownSample chan struct{}
 	dswg           sync.WaitGroup
 	downSampleEn   int32
+
+	engineType config.EngineType
+	storage    Storage
+
+	seriesLimit uint64
 }
 
 type shardDownSampleTaskInfo struct {
@@ -233,6 +325,7 @@ type shardDownSampleTaskInfo struct {
 type nodeMemBucket struct {
 	once      sync.Once
 	memBucket bucket.ResourceBucket
+	timeOut   time.Duration
 }
 
 var nodeMutableLimit nodeMemBucket
@@ -242,11 +335,12 @@ func (nodeLimit *nodeMemBucket) initNodeMemBucket(timeOut time.Duration, memThre
 		log.Info("New node mem limit bucket", zap.Int64("node mutable size limit", memThreshold),
 			zap.Duration("max write hang duration", timeOut))
 		nodeLimit.memBucket = bucket.NewInt64Bucket(timeOut, memThreshold, false)
+		nodeLimit.timeOut = timeOut
 	})
 }
 
-func (nodeLimit *nodeMemBucket) allocResource(r int64) error {
-	return nodeLimit.memBucket.GetResource(r)
+func (nodeLimit *nodeMemBucket) allocResource(r int64, timer *time.Timer) error {
+	return nodeLimit.memBucket.GetResDetected(r, timer)
 }
 
 func (nodeLimit *nodeMemBucket) freeResource(r int64) {
@@ -268,12 +362,21 @@ func initMaxDownSampleParallelism(parallelism int) {
 	maxDownSampleTaskNum = parallelism
 }
 
+func setDownSampleWriteDrop(enabled bool) {
+	DownSampleWriteDrop = enabled
+}
+
+func getDownSampleWriteDrop() bool {
+	return DownSampleWriteDrop
+}
+
 func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdentifier, durationInfo *meta.DurationDescriptor, tr *meta.TimeRangeInfo,
-	options netstorage.EngineOptions) *shard {
+	options netstorage.EngineOptions, engineType config.EngineType) *shard {
 	db, rp := decodeShardPath(dataPath)
-	tsspPath := path.Join(dataPath, immutable.TsspDirName)
+	filePath := immutable.GetDir(engineType, dataPath)
+
 	lock := fileops.FileLockOption(*lockPath)
-	err := fileops.MkdirAll(tsspPath, 0750, lock)
+	err := fileops.MkdirAll(filePath, 0750, lock)
 	if err != nil {
 		panic(err)
 	}
@@ -288,12 +391,12 @@ func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdent
 		closed:             interruptsignal.NewInterruptSignal(),
 		dataPath:           dataPath,
 		walPath:            walPath,
-		tsspPath:           tsspPath,
+		filesPath:          filePath,
 		lock:               lockPath,
 		ident:              ident,
 		isAsyncReplayWal:   options.WalReplayAsync,
 		wal:                NewWAL(walPath, lockPath, options.WalSyncInterval, options.WalEnabled, options.WalReplayParallel, getWalPartitionNum()),
-		activeTbl:          mutable.NewMemTable(mutable.NewConfig(), dataPath),
+		activeTbl:          mutable.NewMemTable(engineType),
 		memDataReadEnabled: options.MemDataReadEnabled,
 		maxTime:            0,
 		lastWriteTime:      fasttime.UnixTimestamp(),
@@ -310,14 +413,25 @@ func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdent
 		fileStat:       statistics.NewFileStatistics(),
 		stopDownSample: make(chan struct{}),
 		downSampleEn:   0,
+		droppedMst:     sync.Map{},
+		engineType:     engineType,
+		seriesLimit:    uint64(options.MaxSeriesPerDatabase),
 	}
-	DownSampleWriteDrop = options.DownSampleWriteDrop
+	switch engineType {
+	case config.TSSTORE:
+		s.storage = &tsstoreImpl{}
+	case config.COLUMNSTORE:
+		s.storage = newColumnstoreImpl()
+	default:
+		return nil
+	}
+	setDownSampleWriteDrop(options.DownSampleWriteDrop)
 	initMaxDownSampleParallelism(options.MaxDownSampleTaskConcurrency)
 
-	s.log = logger.NewLogger(errno.ModuleShard)
-	s.SetMutableSizeLimit(options.ShardMutableSizeLimit)
+	s.log = Log.NewLogger(errno.ModuleShard)
 	s.durationInfo = durationInfo
-	tier, expired := s.TierDurationExpired()
+	tier := s.GetTier()
+	expired := s.IsTierExpired()
 	s.tier = tier
 	if expired {
 		if tier == util.Hot {
@@ -326,9 +440,23 @@ func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdent
 			s.tier = util.Cold
 		}
 	}
-	s.immTables = immutable.NewTableStore(tsspPath, s.lock, &s.tier, options.CompactRecovery, immutable.NewConfig())
+	s.immTables = immutable.NewTableStore(filePath, s.lock, &s.tier, options.CompactRecovery, immutable.GetConfig())
 	s.immTables.SetAddFunc(s.addRowCounts)
+	s.immTables.SetImmTableType(s.engineType)
 	return s
+}
+
+func (s *shard) initSeriesLimiter(limit uint64) {
+	if limit == 0 {
+		return
+	}
+
+	s.indexBuilder.SetSeriesLimiter(func() error {
+		if limit > s.immTables.SeriesTotal() {
+			return nil
+		}
+		return errno.NewError(errno.SeriesLimited, s.ident.OwnerDb, limit, s.immTables.SeriesTotal())
+	})
 }
 
 func (s *shard) NewShardKeyIdx(shardType, dataPath string, lockPath *string) error {
@@ -344,25 +472,16 @@ func (s *shard) NewShardKeyIdx(shardType, dataPath string, lockPath *string) err
 	return nil
 }
 
-func (s *shard) Ref() {
-	s.wg.Add(1)
-}
-
-func (s *shard) UnRef() {
-	s.wg.Done()
-}
-
 func (s *shard) SetWriteColdDuration(duration time.Duration) {
 	s.writeColdDuration = duration
 }
 
-func (s *shard) SetMutableSizeLimit(size int64) {
-	s.activeTbl.GetConf().SetShardMutableSizeLimit(size)
-	s.mutableSizeLimit = size
+func (s *shard) isClosing() bool {
+	return atomic.LoadInt32(&s.cacheClosed) > 0
 }
 
 func (s *shard) WriteRows(rows []influx.Row, binaryRows []byte) error {
-	if atomic.LoadInt32(&s.cacheClosed) > 0 {
+	if s.isClosing() {
 		return errno.NewError(errno.ErrShardClosed, s.ident.ShardID)
 	}
 
@@ -379,6 +498,11 @@ func (s *shard) WriteRows(rows []influx.Row, binaryRows []byte) error {
 	atomic.AddInt64(&statistics.PerfStat.WriteRowsBatch, 1)
 	atomic.AddInt64(&statistics.PerfStat.WriteRowsCount, int64(len(rows)))
 	return nil
+}
+
+func (s *shard) WriteCols(cols record.Record, binaryRows []byte) error {
+	mw := getMstWriteCtx(nodeMutableLimit.timeOut, s.engineType)
+	return s.storage.WriteCols(s, &cols, mw)
 }
 
 func (s *shard) WaitWriteFinish() {
@@ -421,12 +545,12 @@ func (s *shard) EnableCompAndMerge() {
 	s.immTables.EnableCompAndMerge()
 }
 
-func (s *shard) IsDownsampled() bool {
+func (s *shard) isDownsampled() bool {
 	return s.ident.DownSampleLevel != 0
 }
 
 func (s *shard) Compact() error {
-	if s.IsDownsampled() {
+	if s.isDownsampled() {
 		return nil
 	}
 
@@ -480,8 +604,11 @@ func (s *shard) Snapshot() {
 }
 
 type mstWriteCtx struct {
-	rowsPool sync.Pool
-	mstMap   dictpool.Dict
+	rowsPool     sync.Pool
+	mstMap       dictpool.Dict
+	timer        *time.Timer
+	writeRowsCtx mutable.WriteRowsCtx
+	engineType   config.EngineType
 }
 
 func (mw *mstWriteCtx) getMstMap() *dictpool.Dict {
@@ -498,10 +625,17 @@ func (mw *mstWriteCtx) getRowsPool() []influx.Row {
 	return rp
 }
 
+func (mw *mstWriteCtx) initWriteRowsCtx(getLastFlushTime func(msName string, sid uint64) int64, addRowCountsBySid func(msName string, sid uint64, rowCounts int64),
+	mstsInfo map[string]*meta.MeasurementInfo) {
+	mw.writeRowsCtx.GetLastFlushTime = getLastFlushTime
+	mw.writeRowsCtx.AddRowCountsBySid = addRowCountsBySid
+	mw.writeRowsCtx.MstsInfo = mstsInfo
+}
+
 // nolint
 func (mw *mstWriteCtx) putRowsPool(rp []influx.Row) {
-	for _, r := range rp {
-		r.Reset()
+	for i := range rp {
+		rp[i].Reset()
 	}
 	rp = rp[:0]
 	mw.rowsPool.Put(rp)
@@ -509,16 +643,25 @@ func (mw *mstWriteCtx) putRowsPool(rp []influx.Row) {
 
 func (mw *mstWriteCtx) Reset() {
 	mw.mstMap.Reset()
+	if mw.engineType == config.COLUMNSTORE {
+		mw.writeRowsCtx.MstsInfo = make(map[string]*meta.MeasurementInfo)
+	}
 }
 
 var mstWriteCtxPool sync.Pool
 
-func getMstWriteCtx() *mstWriteCtx {
+func getMstWriteCtx(d time.Duration, engineType config.EngineType) *mstWriteCtx {
 	v := mstWriteCtxPool.Get()
 	if v == nil {
-		return &mstWriteCtx{}
+		return &mstWriteCtx{
+			timer:      time.NewTimer(d),
+			engineType: engineType,
+		}
 	}
-	return v.(*mstWriteCtx)
+	ctx := v.(*mstWriteCtx)
+	ctx.engineType = engineType
+	ctx.timer.Reset(d)
+	return ctx
 }
 
 func putMstWriteCtx(mw *mstWriteCtx) {
@@ -530,18 +673,20 @@ func putMstWriteCtx(mw *mstWriteCtx) {
 		mw.putRowsPool(*rows)
 	}
 
+	if !mw.timer.Stop() {
+		select {
+		case <-mw.timer.C:
+		default:
+		}
+	}
 	mw.Reset()
 	mstWriteCtxPool.Put(mw)
 }
 
-func (s *shard) getLastFlushTime(msName string, sid uint64) (int64, error) {
-	tm, err := s.immTables.GetLastFlushTimeBySid(msName, sid)
-	if err != nil {
-		return 0, err
-	}
-
+func (s *shard) getLastFlushTime(msName string, sid uint64) int64 {
+	tm := s.immTables.GetLastFlushTimeBySid(msName, sid)
 	if tm == math.MaxInt64 || s.snapshotTbl == nil {
-		return tm, nil
+		return tm
 	}
 
 	snapshotTm := s.snapshotTbl.GetMaxTimeBySidNoLock(msName, sid)
@@ -549,7 +694,7 @@ func (s *shard) getLastFlushTime(msName string, sid uint64) (int64, error) {
 		tm = snapshotTm
 	}
 
-	return tm, nil
+	return tm
 }
 
 func (s *shard) addRowCountsBySid(msName string, sid uint64, rowCounts int64) {
@@ -561,61 +706,54 @@ func (s *shard) getRowCountsBySid(msName string, sid uint64) (int64, error) {
 }
 
 func (s *shard) addRowCounts(rowCounts int64) {
-	atomic.AddInt64(&s.count, rowCounts)
+	atomic.AddInt64(&s.rowCount, rowCounts)
 }
 
 func calculateMemSize(rows influx.Rows) int64 {
 	var memCost int64
 	for i := range rows {
 		// calculate tag mem cost, sid is 8 bytes
-		memCost += int64(record.Uint64SizeBytes * len(rows[i].Tags))
+		memCost += int64(util.Uint64SizeBytes * len(rows[i].Tags))
 
 		// calculate field mem cost
 		for j := 0; j < len(rows[i].Fields); j++ {
 			memCost += int64(len(rows[i].Fields[j].Key))
 			if rows[i].Fields[j].Type == influx.Field_Type_Float {
-				memCost += int64(record.Float64SizeBytes)
+				memCost += int64(util.Float64SizeBytes)
 			} else if rows[i].Fields[j].Type == influx.Field_Type_String {
 				memCost += int64(len(rows[i].Fields[j].StrValue))
 			} else if rows[i].Fields[j].Type == influx.Field_Type_Boolean {
-				memCost += int64(record.BooleanSizeBytes)
+				memCost += int64(util.BooleanSizeBytes)
 			} else if rows[i].Fields[j].Type == influx.Field_Type_Int {
-				memCost += int64(record.Uint64SizeBytes)
+				memCost += int64(util.Uint64SizeBytes)
 			}
 		}
 	}
 	return memCost
 }
 
-func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
-	s.wg.Add(1)
-	s.writeWg.Add(1)
-	defer s.wg.Done()
-	defer s.writeWg.Done()
+func cloneRowToDict(mmPoints *dictpool.Dict, mw *mstWriteCtx, row *influx.Row) *influx.Row {
+	if !mmPoints.Has(row.Name) {
+		rp := mw.getRowsPool()
+		mmPoints.Set(row.Name, &rp)
+	}
+	rowsPool := mmPoints.Get(row.Name)
+	rp, _ := rowsPool.(*[]influx.Row)
+
+	if cap(*rp) > len(*rp) {
+		*rp = (*rp)[:len(*rp)+1]
+	} else {
+		*rp = append(*rp, influx.Row{})
+	}
+	ri := &(*rp)[len(*rp)-1]
+	ri.Clone(row)
+	return ri
+}
+
+func (s *shard) writeIndex(rows influx.Rows, mw *mstWriteCtx, mmPoints *dictpool.Dict) error {
 	var err error
 
-	if s.ident.ReadOnly {
-		e := errors.New("can not write rows to downSampled shard")
-		log.Error("write into shard failed", zap.Error(e))
-		if !DownSampleWriteDrop {
-			return e
-		}
-		return nil
-	}
 	start := time.Now()
-	curSize := calculateMemSize(rows)
-	err = nodeMutableLimit.allocResource(curSize)
-	atomic.AddInt64(&statistics.PerfStat.WriteGetTokenDurationNs, time.Since(start).Nanoseconds())
-	if err != nil {
-		s.log.Info("Alloc resource failed, need retry", zap.Int64("current mem size", curSize))
-		return err
-	}
-
-	mw := getMstWriteCtx()
-	defer putMstWriteCtx(mw)
-	mmPoints := mw.getMstMap()
-
-	start = time.Now()
 	if !sort.IsSorted(rows) {
 		sort.Stable(rows)
 	}
@@ -623,10 +761,9 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 
 	var writeIndexRequired bool
 	start = time.Now()
-
 	tm := int64(math.MinInt64)
 	primaryIndex := s.indexBuilder.GetPrimaryIndex()
-	mergetIndex := primaryIndex.(*tsi.MergeSetIndex)
+	idx, _ := primaryIndex.(*tsi.MergeSetIndex)
 	for i := 0; i < len(rows); i++ {
 		if s.closed.Closed() {
 			return errno.NewError(errno.ErrShardClosed, s.ident.ShardID)
@@ -636,29 +773,12 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 			continue
 		}
 
-		if !mmPoints.Has(rows[i].Name) {
-			rp := mw.getRowsPool()
-			mmPoints.Set(rows[i].Name, &rp)
-		}
-		rowsPool := mmPoints.Get(rows[i].Name)
-		rp, ok := rowsPool.(*[]influx.Row)
-		if !ok {
-			return fmt.Errorf("MstMap error")
-		}
-
-		if cap(*rp) > len(*rp) {
-			*rp = (*rp)[:len(*rp)+1]
-		} else {
-			*rp = append(*rp, influx.Row{})
-		}
-		ri := &(*rp)[len(*rp)-1]
-		ri.Clone(&rows[i])
-
-		if rows[i].Timestamp > tm {
-			tm = rows[i].Timestamp
+		ri := cloneRowToDict(mmPoints, mw, &rows[i])
+		if ri.Timestamp > tm {
+			tm = ri.Timestamp
 		}
 		if !writeIndexRequired {
-			ri.SeriesId, err = mergetIndex.GetSeriesIdBySeriesKey(rows[i].IndexKey, record.Str2bytes(rows[i].Name))
+			ri.SeriesId, err = idx.GetSeriesIdBySeriesKey(rows[i].IndexKey, util.Str2bytes(rows[i].Name))
 			if err != nil {
 				return err
 			}
@@ -675,7 +795,6 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 	s.setMaxTime(tm)
 
 	failpoint.Inject("SlowDownCreateIndex", nil)
-
 	if writeIndexRequired {
 		if err = s.indexBuilder.CreateIndexIfNotExists(mmPoints); err != nil {
 			return err
@@ -686,14 +805,54 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 		}
 	}
 	atomic.AddInt64(&statistics.PerfStat.WriteIndexDurationNs, time.Since(start).Nanoseconds())
+	return nil
+}
+
+func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
+	s.wg.Add(1)
+	s.writeWg.Add(1)
+	defer s.wg.Done()
+	defer s.writeWg.Done()
+	var err error
+	var partialWriteError error
+
+	if s.ident.ReadOnly {
+		err := errors.New("can not write rows to downSampled shard")
+		log.Error("write into shard failed", zap.Error(err))
+		if !getDownSampleWriteDrop() {
+			return err
+		}
+		return nil
+	}
+
+	mw := getMstWriteCtx(nodeMutableLimit.timeOut, s.engineType)
+	defer putMstWriteCtx(mw)
+
+	// 1. alloc token
+	start := time.Now()
+	curSize := calculateMemSize(rows)
+	err = nodeMutableLimit.allocResource(curSize, mw.timer)
+	atomic.AddInt64(&statistics.PerfStat.WriteGetTokenDurationNs, time.Since(start).Nanoseconds())
+	if err != nil {
+		s.log.Info("Alloc resource failed, need retry", zap.Int64("current mem size", curSize))
+		return err
+	}
+
+	// 2. write index
+	err = s.storage.WriteIndex(s, &rows, mw)
+	if err != nil && !errno.Equal(err, errno.SeriesLimited) {
+		nodeMutableLimit.freeResource(curSize)
+		return err
+	}
+	partialWriteError = err
 
 	s.snapshotLock.RLock()
-
+	// 3. write data to mem table
+	// Token is released during the snapshot process, the number of tokens needs to be recorded before data is written.
 	start = time.Now()
-
 	failpoint.Inject("SlowDownActiveTblWrite", nil)
-
-	if err = s.activeTbl.WriteRows(mmPoints, s.getLastFlushTime, s.addRowCountsBySid); err != nil {
+	err = s.storage.WriteRows(s, &rows, mw)
+	if err != nil {
 		s.activeTbl.AddMemSize(curSize)
 		s.snapshotLock.RUnlock()
 		log.Error("write rows to memory table fail", zap.Uint64("shard", s.ident.ShardID), zap.Error(err))
@@ -702,11 +861,10 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 	s.activeTbl.AddMemSize(curSize)
 	atomic.AddInt64(&statistics.PerfStat.WriteRowsDurationNs, time.Since(start).Nanoseconds())
 
+	// 4. write wal
 	start = time.Now()
-
 	failpoint.Inject("SlowDownWalWrite", nil)
-
-	if err := s.wal.Write(binaryRows); err != nil {
+	if err = s.wal.Write(binaryRows); err != nil {
 		s.snapshotLock.RUnlock()
 		log.Error("write rows to wal fail", zap.Uint64("shard", s.ident.ShardID), zap.Error(err))
 		return err
@@ -714,7 +872,7 @@ func (s *shard) writeRowsToTable(rows influx.Rows, binaryRows []byte) error {
 	atomic.AddInt64(&statistics.PerfStat.WriteWalDurationNs, time.Since(start).Nanoseconds())
 	s.snapshotLock.RUnlock()
 	s.addRowCounts(int64(len(rows)))
-	return nil
+	return partialWriteError
 }
 
 func (s *shard) enableForceFlush() {
@@ -748,112 +906,19 @@ func (s *shard) ForceFlush() {
 	s.endSnapshot()
 }
 
-func flushChunkImp(dataPath, msName string, lockPath *string, totalChunks int, tbStore immutable.TablesStore, chunk *mutable.WriteChunk,
-	orderMs, unOrderMs *immutable.MsBuilder, finish bool) (*immutable.MsBuilder, *immutable.MsBuilder) {
-	orderRec := chunk.OrderWriteRec.GetRecord()
-	unOrderRec := chunk.UnOrderWriteRec.GetRecord()
-	conf := immutable.NewConfig()
-	var err error
-	if orderRec.RowNums() != 0 {
-		if orderMs == nil {
-			orderFileName := immutable.NewTSSPFileName(tbStore.NextSequence(), 0, 0, 0, true, lockPath)
-			orderMs = immutable.AllocMsBuilder(dataPath, msName, lockPath, conf, totalChunks,
-				orderFileName, tbStore.Tier(), tbStore.Sequencer(), orderRec.Len())
-		}
-
-		orderMs, err = orderMs.WriteRecord(chunk.Sid, orderRec, func(fn immutable.TSSPFileName) (seq uint64, lv uint16, merge uint16, ext uint16) {
-			return tbStore.NextSequence(), 0, 0, 0
-		})
-		if err != nil {
-			tbStore.UnRefSequencer()
-			panic(err)
-		}
-		atomic.AddInt64(&statistics.PerfStat.FlushRowsCount, int64(orderRec.RowNums()))
-		atomic.AddInt64(&statistics.PerfStat.FlushOrderRowsCount, int64(orderRec.RowNums()))
-	}
-
-	if unOrderRec.RowNums() != 0 {
-		if unOrderMs == nil {
-			disorderFileName := immutable.NewTSSPFileName(tbStore.NextSequence(), 0, 0, 0, false, lockPath)
-			unOrderMs = immutable.AllocMsBuilder(dataPath, msName, lockPath, conf,
-				totalChunks, disorderFileName, tbStore.Tier(), tbStore.Sequencer(), unOrderRec.Len())
-		}
-
-		unOrderMs, err = unOrderMs.WriteRecord(chunk.Sid, unOrderRec, func(fn immutable.TSSPFileName) (seq uint64, lv uint16, merge uint16, ext uint16) {
-			return tbStore.NextSequence(), 0, 0, 0
-		})
-		if err != nil {
-			tbStore.UnRefSequencer()
-			panic(err)
-		}
-
-		atomic.AddInt64(&statistics.PerfStat.FlushRowsCount, int64(unOrderRec.RowNums()))
-		atomic.AddInt64(&statistics.PerfStat.FlushUnOrderRowsCount, int64(unOrderRec.RowNums()))
-	}
-
-	if finish {
-		if orderMs != nil {
-			f, err := orderMs.NewTSSPFile(true)
-			if err != nil {
-				tbStore.UnRefSequencer()
-				panic(err)
-			}
-			if f != nil {
-				orderMs.Files = append(orderMs.Files, f)
-			}
-
-			if err = immutable.RenameTmpFiles(orderMs.Files); err != nil {
-				if os.IsNotExist(err) {
-					orderMs = nil
-					unOrderMs = nil
-					tbStore.UnRefSequencer()
-					logger.GetLogger().Error("rename init file failed", zap.String("mstName", msName), zap.Error(err))
-					return orderMs, unOrderMs
-				}
-				panic(err)
-			}
-			tbStore.AddTSSPFiles(orderMs.Name(), true, orderMs.Files...)
-			orderMs = nil
-			tbStore.UnRefSequencer()
-		}
-
-		if unOrderMs != nil {
-			f, err := unOrderMs.NewTSSPFile(true)
-			if err != nil {
-				tbStore.UnRefSequencer()
-				panic(err)
-			}
-			if f != nil {
-				unOrderMs.Files = append(unOrderMs.Files, f)
-			}
-			if err = immutable.RenameTmpFiles(unOrderMs.Files); err != nil {
-				if os.IsNotExist(err) {
-					orderMs = nil
-					unOrderMs = nil
-					tbStore.UnRefSequencer()
-					logger.GetLogger().Error("rename init file failed", zap.String("mstName", msName), zap.Error(err))
-					return orderMs, unOrderMs
-				}
-				panic(err)
-			}
-			tbStore.AddTSSPFiles(unOrderMs.Name(), false, unOrderMs.Files...)
-			unOrderMs = nil
-			tbStore.UnRefSequencer()
-		}
-	}
-
-	return orderMs, unOrderMs
-}
-
 func (s *shard) commitSnapshot(snapshot *mutable.MemTable) {
-	snapshot.ApplyConcurrency(func(msName string, sids []uint64) {
+	snapshot.MTable.ApplyConcurrency(snapshot, func(msName string, sids []uint64) {
+		// do not flush measurement that is deleting
+		if s.checkMstDeleting(msName) {
+			return
+		}
 		start := time.Now()
 		t := start
-		snapshot.SortAndDedup(msName, sids)
+		snapshot.MTable.SortAndDedup(snapshot, msName, sids)
 		atomic.AddInt64(&statistics.PerfStat.SnapshotSortChunksNs, time.Since(t).Nanoseconds())
 
 		t = time.Now()
-		snapshot.FlushChunks(s.tsspPath, msName, s.lock, s.immTables, sids, flushChunkImp)
+		snapshot.MTable.FlushChunks(snapshot, s.filesPath, msName, s.lock, s.immTables, sids)
 		atomic.AddInt64(&statistics.PerfStat.SnapshotFlushChunksNs, time.Since(t).Nanoseconds())
 
 		atomic.AddInt64(&statistics.PerfStat.SnapshotHandleChunksNs, time.Since(start).Nanoseconds())
@@ -886,11 +951,9 @@ func (s *shard) writeSnapshot() {
 
 	s.snapshotTbl = s.activeTbl
 	curSize := s.snapshotTbl.GetMemSize()
-	statistics.MutableStat.AddMutableSize(s.tsspPath, -curSize)
 
-	s.activeTbl = mutable.GetMemTable(s.tsspPath)
+	s.activeTbl = mutable.GetMemTable(s.engineType)
 	s.activeTbl.SetIdx(s.skIdx)
-	s.activeTbl.GetConf().SetShardMutableSizeLimit(s.mutableSizeLimit)
 	s.snapshotLock.Unlock()
 
 	start := time.Now()
@@ -918,26 +981,26 @@ func (s *shard) writeSnapshot() {
 	atomic.AddInt64(&statistics.PerfStat.FlushSnapshotCount, 1)
 }
 
-func (s *shard) MaxTime() int64 {
+func (s *shard) GetMaxTime() int64 {
 	s.tmLock.RLock()
 	tm := s.maxTime
 	s.tmLock.RUnlock()
 	return tm
 }
 
-func (s *shard) SeriesCount() int {
+func (s *shard) GetSeriesCount() int {
 	if s.skIdx == nil {
 		return 0
 	}
 	return s.skIdx.GetShardSeriesCount()
 }
 
-func (s *shard) Count() uint64 {
-	return uint64(atomic.LoadInt64(&s.count))
+func (s *shard) GetRowCount() uint64 {
+	return uint64(atomic.LoadInt64(&s.rowCount))
 }
 
 func (s *shard) GetSplitPoints(idxes []int64) ([]string, error) {
-	if atomic.LoadInt32(&s.cacheClosed) > 0 {
+	if s.isClosing() {
 		return nil, errno.NewError(errno.ErrShardClosed, s.ident.ShardID)
 	}
 	return s.getSplitPointsByRowCount(idxes)
@@ -949,8 +1012,8 @@ func (s *shard) getSplitPointsByRowCount(idxes []int64) ([]string, error) {
 	})
 }
 
-func (s *shard) GetIndexBuild() *tsi.IndexBuilder {
-	if atomic.LoadInt32(&s.cacheClosed) > 0 {
+func (s *shard) GetIndexBuilder() *tsi.IndexBuilder {
+	if s.isClosing() {
 		return nil
 	}
 	s.mu.RLock()
@@ -1114,11 +1177,22 @@ func (s *shard) Open(client metaclient.MetaClient) error {
 	s.setMaxTime(maxTime)
 	s.log.Info("open immutable done", zap.Uint64("id", s.ident.ShardID), zap.Duration("time used", time.Since(start)),
 		zap.Int64("maxTime", maxTime), zap.Uint64("opId", s.opId))
+
+	s.initSeriesLimiter(s.seriesLimit)
+	return nil
+}
+
+func (s *shard) removeFile(logFile string) error {
+	lock := fileops.FileLockOption(*s.lock)
+	if err := fileops.Remove(logFile, lock); err != nil {
+		log.Error("remove downSample log file error", zap.Error(err))
+		return err
+	}
 	return nil
 }
 
 func (s *shard) DownSampleRecover(client metaclient.MetaClient) error {
-	shardDir := filepath.Dir(s.tsspPath)
+	shardDir := filepath.Dir(s.filesPath)
 	dirs, err := fileops.ReadDir(shardDir)
 	if err != nil {
 		return err
@@ -1140,7 +1214,11 @@ func (s *shard) DownSampleRecover(client metaclient.MetaClient) error {
 			logInfo.reset()
 			err = readDownSampleLogFile(logFile, logInfo)
 			if err != nil {
-				return err
+				log.Error("recover downSample log file error", zap.Error(err))
+				if err = s.removeFile(logFile); err != nil {
+					return err
+				}
+				continue
 			}
 			s.mu.Lock()
 			err = s.DownSampleRecoverReplaceFiles(logInfo, shardDir)
@@ -1259,7 +1337,7 @@ func readDownSampleLogFile(name string, info *DownSampleFilesInfo) error {
 		return fmt.Errorf("invalid downsample log file(%v) crc", name)
 	}
 
-	if buf, err = info.unmarshal(buf); err != nil {
+	if _, err = info.unmarshal(buf); err != nil {
 		return fmt.Errorf("unmarshal downSample log %v fail", name)
 	}
 
@@ -1295,7 +1373,7 @@ func (s *shard) OpenAndEnable(client metaclient.MetaClient) error {
 	return nil
 }
 
-func (s *shard) TableStore() immutable.TablesStore {
+func (s *shard) GetTableStore() immutable.TablesStore {
 	return s.immTables
 }
 
@@ -1306,7 +1384,7 @@ func (s *shard) IsOutOfOrderFilesExist() bool {
 	return s.immTables.IsOutOfOrderFilesExist()
 }
 
-func (s *shard) Expired() bool {
+func (s *shard) IsExpired() bool {
 	now := time.Now().UTC()
 	if s.durationInfo.Duration != 0 && s.endTime.Add(s.durationInfo.Duration).Before(now) {
 		return true
@@ -1314,19 +1392,16 @@ func (s *shard) Expired() bool {
 	return false
 }
 
-func (s *shard) TierDurationExpired() (tier uint64, expired bool) {
+func (s *shard) IsTierExpired() bool {
 	now := time.Now().UTC()
-	if s.durationInfo.TierDuration == 0 {
-		return s.durationInfo.Tier, false
+	if s.durationInfo.TierDuration != 0 && s.endTime.Add(s.durationInfo.TierDuration).Before(now) {
+		return true
 	}
-	if s.durationInfo.Tier == util.Hot && s.endTime.Add(s.durationInfo.TierDuration).Before(now) {
-		return util.Hot, true
-	}
+	return false
+}
 
-	if s.durationInfo.Tier == util.Warm && s.endTime.Add(s.durationInfo.TierDuration).Before(now) {
-		return util.Warm, true
-	}
-	return s.durationInfo.Tier, false
+func (s *shard) GetTier() (tier uint64) {
+	return s.durationInfo.Tier
 }
 
 func (s *shard) ChangeShardTierToWarm() {
@@ -1340,7 +1415,7 @@ func (s *shard) ChangeShardTierToWarm() {
 	s.tier = util.Warm
 }
 
-func (s *shard) RPName() string {
+func (s *shard) GetRPName() string {
 	return s.ident.Policy
 }
 
@@ -1358,7 +1433,7 @@ func (s *shard) EnableDownSample() {
 }
 
 func (s *shard) CanDoDownSample() bool {
-	if atomic.LoadInt32(&s.cacheClosed) > 0 || !s.downSampleEnabled() {
+	if s.isClosing() || !s.downSampleEnabled() {
 		return false
 	}
 	return true
@@ -1528,7 +1603,7 @@ func (s *shard) updateShardIentOnMeta(meta interface {
 }
 
 func (s *shard) writeDownSampleInfo(mstNames []string, originFiles [][]immutable.TSSPFile, newFiles [][]immutable.TSSPFile, taskID uint64, level int) (string, error) {
-	shardDir := filepath.Dir(s.tsspPath)
+	shardDir := filepath.Dir(s.filesPath)
 	info := &DownSampleFilesInfo{
 		taskID:   taskID,
 		level:    level,
@@ -1612,7 +1687,8 @@ func (s *shard) StartDownSampleTaskBySchema(start int, filesMap map[int]*immutab
 			downSampleStatItem.AddErrors(1)
 			continue
 		}
-		logger.Info("DownSample Measurement Start", zap.Any("Measurement", mstName))
+		logger.Info("DownSample Measurement Start",
+			zap.String("Measurement", mstName), zap.Uint64("shard", info.ShardId))
 		mstTaskNum += 1
 		filesMap[start+i] = files
 	}
@@ -1620,25 +1696,26 @@ func (s *shard) StartDownSampleTaskBySchema(start int, filesMap map[int]*immutab
 		return err
 	}
 	for {
-		select {
-		case state, _ := <-ch.State:
-			mstTaskNum -= 1
-			s.dswg.Done()
-			downSampleStatItem.AddActive(-1)
-			taskID := state.GetTaskID()
-			allDownSampleFiles[taskID] = state.GetNewFiles()
-			if state.GetErr() != nil {
-				err = state.GetErr()
-				downSampleStatItem.AddErrors(1)
-				if mstTaskNum == 0 {
-					return err
-				}
-				continue
-			}
-			logger.Info("DownSample Measurement Success", zap.Any("Measurement", schemas[taskID-start].Options().OptionsName()))
+		state := <-ch.State
+
+		mstTaskNum -= 1
+		s.dswg.Done()
+		downSampleStatItem.AddActive(-1)
+		taskID := state.GetTaskID()
+		allDownSampleFiles[taskID] = state.GetNewFiles()
+		if state.GetErr() != nil {
+			err = state.GetErr()
+			downSampleStatItem.AddErrors(1)
 			if mstTaskNum == 0 {
 				return err
 			}
+			continue
+		}
+		logger.Info("DownSample Measurement Success",
+			zap.Any("Measurement", schemas[taskID-start].Options().OptionsName()),
+			zap.Uint64("shard", info.ShardId))
+		if mstTaskNum == 0 {
+			return err
 		}
 	}
 }
@@ -1667,13 +1744,13 @@ func (s *shard) StartDownSampleTask(taskID int, mstName string, files *immutable
 	node2 := executor.NewLogicalWriteIntoStorage(node, querySchema)
 	var mmsTables *immutable.MmsTables
 	var ok bool
-	if mmsTables, ok = s.TableStore().(*immutable.MmsTables); !ok {
+	if mmsTables, ok = s.GetTableStore().(*immutable.MmsTables); !ok {
 		return fmt.Errorf("Get MmsTables error")
 	}
 	node2.SetMmsTables(mmsTables)
 	source := influxql.Sources{&influxql.Measurement{Database: db, RetentionPolicy: rpName, Name: mstName}}
 	sidSequenceReader := NewTsspSequenceReader(nil, nil, nil, source, querySchema, files, newSeqs, s.stopDownSample)
-	writeIntoStorage := NewWriteIntoStorageTransform(nil, nil, nil, source, querySchema, immutable.NewConfig(), mmsTables, s.ident.DownSampleLevel == 0)
+	writeIntoStorage := NewWriteIntoStorageTransform(nil, nil, nil, source, querySchema, immutable.GetConfig(), mmsTables, s.ident.DownSampleLevel == 0)
 	fileSequenceAgg := NewFileSequenceAggregator(querySchema, s.ident.DownSampleLevel == 0, s.startTime.UnixNano(), s.endTime.UnixNano())
 	sidSequenceReader.GetOutputs()[0].Connect(fileSequenceAgg.GetInputs()[0])
 	fileSequenceAgg.GetOutputs()[0].Connect(writeIntoStorage.GetInputs()[0])
@@ -1686,23 +1763,28 @@ func (s *shard) StartDownSampleTask(taskID int, mstName string, files *immutable
 	return nil
 }
 
+func (s *shard) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {
+	s.storage.SetMstInfo(name, mstInfo)
+	return
+}
+
 func (s *shard) GetID() uint64 {
 	return s.ident.ShardID
 }
 
-func (s *shard) Ident() *meta.ShardIdentifier {
+func (s *shard) GetIdent() *meta.ShardIdentifier {
 	return s.ident
 }
 
-func (s *shard) Duration() *meta.DurationDescriptor {
+func (s *shard) GetDuration() *meta.DurationDescriptor {
 	return s.durationInfo
 }
 
-func (s *shard) DataPath() string {
+func (s *shard) GetDataPath() string {
 	return s.dataPath
 }
 
-func (s *shard) WalPath() string {
+func (s *shard) GetWalPath() string {
 	return s.walPath
 }
 
@@ -1717,6 +1799,8 @@ func (s *shard) DropMeasurement(ctx context.Context, name string) error {
 	}
 	s.DisableDownSample()
 	defer s.EnableDownSample()
+	s.setMstDeleting(name)
+	defer s.clearMstDeleting(name)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1727,7 +1811,7 @@ func (s *shard) DropMeasurement(ctx context.Context, name string) error {
 	return s.immTables.DropMeasurement(ctx, name)
 }
 
-func (s *shard) Statistics(buffer []byte) ([]byte, error) {
+func (s *shard) GetStatistics(buffer []byte) ([]byte, error) {
 	s.mu.RLock()
 	if s.closed.Closed() {
 		s.mu.RUnlock()
@@ -1742,16 +1826,12 @@ func (s *shard) Statistics(buffer []byte) ([]byte, error) {
 func (s *shard) GetShardDownSamplePolicy(policy *meta.DownSamplePolicyInfo) *meta.ShardDownSamplePolicyInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.getShardDownSamplePolicyHelper(policy)
-}
-
-func (s *shard) getShardDownSamplePolicyHelper(policy *meta.DownSamplePolicyInfo) *meta.ShardDownSamplePolicyInfo {
 	now := time.Now().UTC()
 	if !downSampleInorder {
 		for i := len(policy.DownSamplePolicies) - 1; i >= 0; i-- {
 			if s.checkDownSample(policy.TaskID, policy.DownSamplePolicies[i], i, now) {
 				return &meta.ShardDownSamplePolicyInfo{
-					RpName:                s.RPName(),
+					RpName:                s.GetRPName(),
 					DownSamplePolicyLevel: i + 1,
 					TaskID:                policy.TaskID,
 				}
@@ -1761,7 +1841,7 @@ func (s *shard) getShardDownSamplePolicyHelper(policy *meta.DownSamplePolicyInfo
 		for i := 0; i < len(policy.DownSamplePolicies); i++ {
 			if s.checkDownSample(policy.TaskID, policy.DownSamplePolicies[i], i, now) {
 				return &meta.ShardDownSamplePolicyInfo{
-					RpName:                s.RPName(),
+					RpName:                s.GetRPName(),
 					DownSamplePolicyLevel: i + 1,
 					TaskID:                policy.TaskID,
 				}
@@ -1797,8 +1877,8 @@ func (s *shard) SetShardDownSampleLevel(i int) {
 }
 
 func (s *shard) UpdateDownSampleOnShard(id uint64, level int) {
-	s.Ident().DownSampleLevel = level
-	s.Ident().DownSampleID = id
+	s.GetIdent().DownSampleLevel = level
+	s.GetIdent().DownSampleID = id
 }
 
 func (s *shard) NewDownSampleTask(sdsp *meta.ShardDownSamplePolicyInfo, schema []hybridqp.Catalog, log *zap.Logger) {
@@ -1833,8 +1913,102 @@ func (s *shard) SetIndexBuilder(builder *tsi.IndexBuilder) {
 	s.indexBuilder = builder
 }
 
-func (s *shard) CloseIndexBuilder() error {
-	return s.indexBuilder.Close()
+func (s *shard) setMstDeleting(mst string) {
+	s.droppedMst.Store(mst, struct{}{})
+}
+
+func (s *shard) clearMstDeleting(mst string) {
+	s.droppedMst.Delete(mst)
+}
+
+func (s *shard) checkMstDeleting(mst string) bool {
+	_, ok := s.droppedMst.Load(mst)
+	return ok
+}
+
+func (s *shard) ScanWithSparseIndex(ctx context.Context, schema *executor.QuerySchema, callBack func(num int64) error) (*executor.FileFragments, error) {
+	if len(schema.Options().GetSourcesNames()) != 1 {
+		return nil, fmt.Errorf("Currently, Only a single table is supported.")
+	}
+
+	// get the source measurement.
+	mst := schema.Options().GetSourcesNames()[0]
+
+	// get the data files by the measurement
+	dataFileRes, ok := s.immTables.GetCSFiles(mst)
+	if !ok {
+		return nil, fmt.Errorf("no data file found")
+	}
+	dataFiles := dataFileRes.Files()
+
+	// get the shard fragments by the primary index
+	fileFrags, skipFileIdx, err := s.scanWithPrimaryIndex(dataFiles, schema, mst)
+	if err != nil {
+		for i := range dataFiles {
+			dataFiles[i].Unref()
+			dataFiles[i].UnrefFileReader()
+		}
+		return nil, err
+	}
+	for _, idx := range skipFileIdx {
+		dataFiles[idx].Unref()
+		dataFiles[idx].UnrefFileReader()
+	}
+	return fileFrags, nil
+}
+
+func (s *shard) scanWithPrimaryIndex(dataFiles []immutable.TSSPFile, schema *executor.QuerySchema, mst string) (*executor.FileFragments, []int, error) {
+	var initCondition bool
+	var skipFileIdx []int
+	var keyCondition sparseindex.KeyCondition
+	binaryfilterfunc.RewriteTimeCompareVal(schema.Options().GetSourceCondition())
+	tr := util.TimeRange{schema.Options().GetStartTime(), schema.Options().GetEndTime()}
+	filesFragments := executor.NewFileFragments()
+	for i, dataFile := range dataFiles {
+		if dataFile == nil {
+			skipFileIdx = append(skipFileIdx, i)
+			continue
+		}
+		dataFileName := dataFile.Path()
+		pkFileName := colstore.AppendIndexSuffix(immutable.RemoveTsspSuffix(dataFileName))
+		pkInfo, ok := s.immTables.GetPKFile(mst, pkFileName)
+		if !ok {
+			return nil, nil, fmt.Errorf("no pk file found")
+		}
+		if !initCondition {
+			pkSchema := pkInfo.GetRec().Schema
+			keyCondition = sparseindex.NewKeyCondition(schema.Options().GetSourceCondition(), pkInfo.GetRec().Schema)
+			if pkSchema.FieldIndex(record.TimeField) == 0 {
+				schema.Options().SetSourceCondition(schema.Options().GetCondition())
+				schema.Options().SetTimeFirstKey()
+			}
+
+			initCondition = true
+		}
+		fragmentRanges, err := s.sparseIndexReader.Scan(pkFileName, pkInfo.GetRec(), pkInfo.GetMark(), keyCondition)
+		if err != nil {
+			return nil, nil, err
+		}
+		var fragmentCount uint32
+		for j := range fragmentRanges {
+			fragmentCount += fragmentRanges[j].End - fragmentRanges[j].Start
+		}
+
+		ok, err = dataFile.ContainsByTime(tr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("data file contain by time error")
+		}
+		if !ok {
+			skipFileIdx = append(skipFileIdx, i)
+			continue
+		}
+		filesFragments.AddFileFragment(dataFile.Path(), executor.NewFileFragment(dataFile, fragmentRanges, int64(fragmentCount)), int64(fragmentCount))
+	}
+	return filesFragments, skipFileIdx, nil
+}
+
+func (s *shard) GetEngineType() config.EngineType {
+	return s.engineType
 }
 
 var (

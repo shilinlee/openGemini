@@ -33,6 +33,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const lockFilename = "monitor.lock"
+
 type Server struct {
 	collector   *collector.Collector
 	nodeMonitor *collector.NodeCollector
@@ -41,6 +43,9 @@ type Server struct {
 	cmd    *cobra.Command
 	logger *logger.Logger
 	config *config.TSMonitor
+
+	lockFilename string // lock filename with absolutely path
+	lockFile     *os.File
 }
 
 func NewServer(conf config.Config, cmd *cobra.Command, logger *logger.Logger) (app.Server, error) {
@@ -55,9 +60,7 @@ func NewServer(conf config.Config, cmd *cobra.Command, logger *logger.Logger) (a
 	}
 
 	errLogHistory := filepath.Join(c.MonitorConfig.ErrLogPath, c.MonitorConfig.History)
-	reporterJob := collector.NewReportJob(c.ReportConfig.Address, c.ReportConfig.Database, c.ReportConfig.Rp,
-		time.Duration(c.ReportConfig.RpDuration), false, c.MonitorConfig.Compress, logger, errLogHistory)
-
+	reporterJob := collector.NewReportJob(logger, c, false, errLogHistory)
 	s.collector.Reporter = reporterJob
 	s.nodeMonitor.Reporter = reporterJob
 	s.queryMetric.Reporter = reporterJob
@@ -92,12 +95,31 @@ func (s *Server) Open() error {
 	//Mark start-up in extra log
 	_, _ = fmt.Fprintf(os.Stdout, "%v ts-monitor starting\n", time.Now())
 
+	if err := s.singletonMonitor(); err != nil {
+		return err
+	}
+
 	go s.collect()
 	go s.nodeMonitor.Start()
 	if s.config.QueryConfig.QueryEnable {
 		go s.queryMetric.Start()
 	}
 	return nil
+}
+
+// use file lock to guarantee start one instance.
+func (s *Server) singletonMonitor() error {
+	var err error
+	path, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		return fmt.Errorf("get binary filepath failed, err:%s", err)
+	}
+	s.lockFilename = filepath.Join(path, lockFilename)
+	s.lockFile, err = os.OpenFile(s.lockFilename, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("create lock file failed, err:%s", err)
+	}
+	return lockFile(s.lockFile)
 }
 
 func (s *Server) collect() {
@@ -119,6 +141,12 @@ func (s *Server) Close() error {
 	s.nodeMonitor.Close()
 	if s.config.QueryConfig.QueryEnable {
 		s.queryMetric.Close()
+	}
+	if err := s.lockFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(s.lockFilename); err != nil {
+		return err
 	}
 	return nil
 }

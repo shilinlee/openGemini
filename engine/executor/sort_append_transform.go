@@ -340,9 +340,9 @@ func (f *Float64AppendIterator) Next(endpoint *IteratorEndpoint, params *Iterato
 }
 
 type StringAppendIterator struct {
-	input        Column
-	output       Column
-	stringValues []string
+	input         Column
+	output        Column
+	stringOffsets []uint32
 }
 
 func NewStringAppendIterator() *StringAppendIterator {
@@ -351,7 +351,6 @@ func NewStringAppendIterator() *StringAppendIterator {
 
 // nolint
 func (f *StringAppendIterator) Next(endpoint *IteratorEndpoint, params *IteratorParams) {
-	var start, end uint32
 	f.output = endpoint.OutputPoint.Chunk.Column(endpoint.OutputPoint.Ordinal)
 	f.input = endpoint.InputPoint.Chunk.Column(params.Table[endpoint.OutputPoint.Ordinal])
 	startValue, endValue := f.input.GetRangeValueIndexV2(params.start, params.end)
@@ -359,15 +358,10 @@ func (f *StringAppendIterator) Next(endpoint *IteratorEndpoint, params *Iterator
 		f.output.AppendManyNil(params.end - params.start)
 		return
 	}
-	stringBytes, stringOffset := f.input.GetStringBytes()
-	start = stringOffset[startValue]
-	if endValue == len(stringOffset) {
-		end = uint32(len(stringBytes))
-	} else {
-		end = stringOffset[endValue]
-	}
-	stringBytes = stringBytes[start:end]
-	f.output.AppendStringValues(f.input.StringValuesRange(f.stringValues[:0], startValue, endValue)...)
+
+	var stringBytes []byte
+	stringBytes, f.stringOffsets = f.input.StringValuesWithOffset(startValue, endValue, f.stringOffsets[:0])
+	f.output.AppendStringBytes(stringBytes, f.stringOffsets)
 	if endValue-startValue != params.end-params.start {
 		for i := params.start; i < params.end; i++ {
 			if f.input.IsNilV2(i) {

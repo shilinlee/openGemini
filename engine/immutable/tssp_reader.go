@@ -18,7 +18,6 @@ package immutable
 
 import (
 	"container/list"
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,8 +25,9 @@ import (
 	"sync/atomic"
 
 	"github.com/openGemini/openGemini/lib/fileops"
+	"github.com/openGemini/openGemini/lib/logger"
 	"github.com/openGemini/openGemini/lib/record"
-	stats "github.com/openGemini/openGemini/lib/statisticsPusher/statistics"
+	"github.com/openGemini/openGemini/lib/util"
 	"go.uber.org/zap"
 )
 
@@ -40,10 +40,15 @@ const (
 	compactLogDir     = "compact_log"
 	DownSampleLogDir  = "downsample_log"
 
-	TsspDirName = "tssp"
+	TsspDirName        = "tssp"
+	ColumnStoreDirName = "columnstore"
 
 	defaultCap = 64
 )
+
+func RemoveTsspSuffix(dataPath string) string {
+	return dataPath[:len(dataPath)-tsspFileSuffixLen]
+}
 
 var errFileClosed = fmt.Errorf("tssp file closed")
 
@@ -62,9 +67,9 @@ type TSSPFile interface {
 	Stop()
 	Inuse() bool
 	MetaIndexAt(idx int) (*MetaIndex, error)
-	MetaIndex(id uint64, tr record.TimeRange) (int, *MetaIndex, error)
+	MetaIndex(id uint64, tr util.TimeRange) (int, *MetaIndex, error)
 	ChunkMeta(id uint64, offset int64, size, itemCount uint32, metaIdx int, dst *ChunkMeta, buffer *[]byte) (*ChunkMeta, error)
-	Read(id uint64, tr record.TimeRange, dst *record.Record) (*record.Record, error)
+	Read(id uint64, tr util.TimeRange, dst *record.Record) (*record.Record, error)
 	ReadAt(cm *ChunkMeta, segment int, dst *record.Record, decs *ReadContext) (*record.Record, error)
 	ChunkAt(index int) (*ChunkMeta, error)
 	ReadData(offset int64, size uint32, dst *[]byte) ([]byte, error)
@@ -77,8 +82,8 @@ type TSSPFile interface {
 	// InMemSize get the size of the memory occupied by file
 	InMemSize() int64
 	Contains(id uint64) (bool, error)
-	ContainsByTime(tr record.TimeRange) (bool, error)
-	ContainsValue(id uint64, tr record.TimeRange) (bool, error)
+	ContainsByTime(tr util.TimeRange) (bool, error)
+	ContainsValue(id uint64, tr util.TimeRange) (bool, error)
 	MinMaxTime() (int64, int64, error)
 
 	Delete(ids []int64) error
@@ -215,7 +220,8 @@ func (f *TSSPFiles) Files() []TSSPFile {
 func (f *TSSPFiles) deleteFile(tbl TSSPFile) {
 	idx := f.fileIndex(tbl)
 	if idx < 0 || idx >= f.Len() {
-		panic(fmt.Sprintf("file not file, %v", tbl.Path()))
+		logger.GetLogger().Warn("file not find", zap.String("file", tbl.Path()))
+		return
 	}
 
 	f.files = append(f.files[:idx], f.files[idx+1:]...)
@@ -235,7 +241,7 @@ type tsspFile struct {
 	lock *string
 
 	memEle *list.Element // lru node
-	reader TableReader
+	reader FileReader
 }
 
 func OpenTSSPFile(name string, lockPath *string, isOrder bool, cacheData bool) (TSSPFile, error) {
@@ -300,16 +306,24 @@ func (f *tsspFile) Unref() {
 }
 
 func (f *tsspFile) RefFileReader() {
+	f.mu.RLock()
 	f.reader.Ref()
+	f.mu.RUnlock()
 }
 
 func (f *tsspFile) UnrefFileReader() {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
 	if f.stopped() {
 		return
 	}
-	f.reader.Unref()
+
+	if f.reader.Unref() > 0 {
+		return
+	}
+
+	err := f.FreeFileHandle()
+	if err != nil {
+		log.Error("freeFile failed", zap.Error(err))
+	}
 }
 
 func (f *tsspFile) LevelAndSequence() (uint16, uint64) {
@@ -403,8 +417,8 @@ func (f *tsspFile) FreeMemory(evictLock bool) int64 {
 }
 
 func (f *tsspFile) FreeFileHandle() error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.stopped() {
 		return nil
 	}
@@ -414,7 +428,7 @@ func (f *tsspFile) FreeFileHandle() error {
 	return nil
 }
 
-func (f *tsspFile) MetaIndex(id uint64, tr record.TimeRange) (int, *MetaIndex, error) {
+func (f *tsspFile) MetaIndex(id uint64, tr util.TimeRange) (int, *MetaIndex, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if f.stopped() {
@@ -441,7 +455,7 @@ func (f *tsspFile) ChunkMeta(id uint64, offset int64, size, itemCount uint32, me
 	return f.reader.ChunkMeta(id, offset, size, itemCount, metaIdx, dst, buffer)
 }
 
-func (f *tsspFile) Read(uint64, record.TimeRange, *record.Record) (*record.Record, error) {
+func (f *tsspFile) Read(uint64, util.TimeRange, *record.Record) (*record.Record, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
@@ -529,7 +543,7 @@ func (f *tsspFile) Contains(id uint64) (contains bool, err error) {
 	return
 }
 
-func (f *tsspFile) ContainsValue(id uint64, tr record.TimeRange) (contains bool, err error) {
+func (f *tsspFile) ContainsValue(id uint64, tr util.TimeRange) (contains bool, err error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
@@ -541,7 +555,7 @@ func (f *tsspFile) ContainsValue(id uint64, tr record.TimeRange) (contains bool,
 	return
 }
 
-func (f *tsspFile) ContainsByTime(tr record.TimeRange) (contains bool, err error) {
+func (f *tsspFile) ContainsByTime(tr util.TimeRange) (contains bool, err error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if f.stopped() {
@@ -665,15 +679,9 @@ func (f *tsspFile) LoadIdTimes(p *IdTimePairs) error {
 		log.Error("disk file not init", zap.Uint64("seq", f.name.seq), zap.Uint16("leve", f.name.level))
 		return err
 	}
-	fr, ok := f.reader.(*TSSPFileReader)
-	if !ok {
-		err := fmt.Errorf("LoadIdTimes: disk file isn't *TSSPFileReader type")
-		log.Error("disk file isn't *TSSPFileReader", zap.Uint64("seq", f.name.seq),
-			zap.Uint16("leve", f.name.level))
-		return err
-	}
+	fr := f.reader
 
-	if err := fr.loadIdTimes(f.IsOrder(), p); err != nil {
+	if err := fr.LoadIdTimes(f.IsOrder(), p); err != nil {
 		return err
 	}
 
@@ -786,46 +794,6 @@ func (f *tsspFile) MetaIndexItemNum() int64 {
 var (
 	_ TSSPFile = (*tsspFile)(nil)
 )
-
-type TablesStore interface {
-	SetOpId(shardId uint64, opId uint64)
-	Open() (int64, error)
-	Close() error
-	AddTable(ms *MsBuilder, isOrder bool, tmp bool)
-	AddTSSPFiles(name string, isOrder bool, f ...TSSPFile)
-	FreeAllMemReader()
-	ReplaceFiles(name string, oldFiles, newFiles []TSSPFile, isOrder bool) error
-	GetBothFilesRef(measurement string, hasTimeFilter bool, tr record.TimeRange) ([]TSSPFile, []TSSPFile)
-	ReplaceDownSampleFiles(mstNames []string, originFiles [][]TSSPFile, newFiles [][]TSSPFile, isOrder bool, callBack func()) error
-	NextSequence() uint64
-	Sequencer() *Sequencer
-	GetTSSPFiles(mm string, isOrder bool) (*TSSPFiles, bool)
-	Tier() uint64
-	File(name string, namePath string, isOrder bool) TSSPFile
-	CompactDone(seq []string)
-	CompactionEnable()
-	CompactionDisable()
-	MergeEnable()
-	MergeDisable()
-	CompactionEnabled() bool
-	MergeEnabled() bool
-	IsOutOfOrderFilesExist() bool
-	MergeOutOfOrder(shId uint64, force bool) error
-	LevelCompact(level uint16, shid uint64) error
-	FullCompact(shid uint64) error
-	SetAddFunc(addFunc func(int64))
-	GetLastFlushTimeBySid(measurement string, sid uint64) (int64, error)
-	GetRowCountsBySid(measurement string, sid uint64) (int64, error)
-	AddRowCountsBySid(measurement string, sid uint64, rowCounts int64) error
-	GetOutOfOrderFileNum() int
-	GetMstFileStat() *stats.FileStat
-	DropMeasurement(ctx context.Context, name string) error
-	GetFileSeq() uint64
-	DisableCompAndMerge()
-	EnableCompAndMerge()
-	FreeSequencer() bool
-	UnRefSequencer()
-}
 
 var compactGroupPool = sync.Pool{New: func() interface{} { return &CompactGroup{group: make([]string, 0, 8)} }}
 

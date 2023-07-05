@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/influxdata/influxdb/services/httpd"
 	"github.com/openGemini/openGemini/lib/crypto"
+	httpdListener "github.com/openGemini/openGemini/lib/listener"
 	"github.com/openGemini/openGemini/lib/logger"
 	"github.com/openGemini/openGemini/open_src/influx/httpd/config"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
@@ -57,7 +57,7 @@ func NewService(c config.Config) *Service {
 		unixSocketPerm: uint32(c.UnixSocketPermissions),
 		bindSocket:     c.BindSocket,
 		Logger:         logger.GetLogger().With(zap.String("service", "httpd")),
-		whiteList:      c.BindAddress,
+		whiteList:      c.WhiteList,
 		Handler:        NewHandler(c),
 	}
 	if s.tlsConfig == nil {
@@ -156,7 +156,7 @@ func (s *Service) Open() error {
 	// Enforce a connection limit if one has been given.
 	if s.limit > 0 {
 		for id, _ := range s.Ln {
-			s.Ln[id] = httpd.LimitListener(s.Ln[id], s.limit)
+			s.Ln[id] = httpdListener.NewLimitListener(s.Ln[id], s.limit, s.whiteList)
 		}
 	}
 
@@ -213,7 +213,7 @@ func (s *Service) Close() error {
 func (s *Service) Err() <-chan error { return s.err }
 
 // Addr returns the listener's address. Returns nil if listener is closed.
-//test func, so return 0 index addr
+// test func, so return 0 index addr
 func (s *Service) Addr() net.Addr {
 	if s.Ln[0] != nil {
 		return s.Ln[0].Addr()
@@ -223,7 +223,7 @@ func (s *Service) Addr() net.Addr {
 
 // BoundHTTPAddr returns the string version of the address that the HTTP server is listening on.
 // This is useful if you start an ephemeral server in test with bind address localhost:0.
-//test func, so return 0 index addr
+// test func, so return 0 index addr
 func (s *Service) BoundHTTPAddr() string {
 	return s.Ln[0].Addr().String()
 }

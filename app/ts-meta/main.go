@@ -67,7 +67,7 @@ func doRun(args ...string) error {
 			return err
 		}
 		mainCmd := app.NewCommand()
-		err = mainCmd.InitConfig(config.NewTSMeta(), options.ConfigPath)
+		err = mainCmd.InitConfig(config.NewTSMeta(true), options.ConfigPath)
 		if err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func doRun(args ...string) error {
 		util.MustClose(mainCmd)
 		mainCmd.Logger.Info("Meta shutdown successfully!")
 	case "version":
-		fmt.Printf(app.VERSION, TsMeta, TsVersion, TsCommit, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf(app.VERSION, TsMeta, TsVersion, TsBranch, TsCommit, runtime.GOOS, runtime.GOARCH)
 	default:
 		return fmt.Errorf(metaUsage)
 	}

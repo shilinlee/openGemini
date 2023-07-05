@@ -43,7 +43,8 @@ func Test_Collect_MetricFiles(t *testing.T) {
 	}
 
 	var testCases = []TestCase{
-		{"report metric file ok",
+		{
+			"report metric file ok",
 			func(r *http.Request) (*http.Response, error) {
 				resp := &http.Response{
 					StatusCode: http.StatusNoContent,
@@ -79,15 +80,7 @@ func Test_Collect_MetricFiles(t *testing.T) {
 
 	for _, tt := range testCases {
 		coll := NewCollector(dir, "", "history.json", logger)
-		coll.Reporter = NewReportJob(config.DefaultMonitorAddress,
-			config.DefaultMonitorDatabase,
-			config.DefaultMonitorRP,
-			config.DefaultMonitorRPDuration,
-			false,
-			false,
-			logger,
-			config.DefaultHistoryFile,
-		)
+		coll.Reporter = NewReportJob(logger, config.NewTSMonitor(), false, config.DefaultHistoryFile)
 
 		go func() {
 			time.AfterFunc(2*time.Second, func() {
@@ -132,7 +125,8 @@ func Test_Collect_ErrLogFiles(t *testing.T) {
 	}
 
 	var testCases = []TestCase{
-		{"report error logs ok",
+		{
+			"report error logs ok",
 			func(r *http.Request) (*http.Response, error) {
 				resp := &http.Response{
 					StatusCode: http.StatusNoContent,
@@ -171,15 +165,7 @@ func Test_Collect_ErrLogFiles(t *testing.T) {
 	logger := logger.NewLogger(errno.ModuleUnknown)
 	for _, tt := range testCases {
 		coll := NewCollector("", dir, "history.json", logger)
-		coll.Reporter = NewReportJob(config.DefaultMonitorAddress,
-			config.DefaultMonitorDatabase,
-			config.DefaultMonitorRP,
-			config.DefaultMonitorRPDuration,
-			false,
-			false,
-			logger,
-			filepath.Join(dir, config.DefaultHistoryFile),
-		)
+		coll.Reporter = NewReportJob(logger, config.NewTSMonitor(), false, filepath.Join(dir, config.DefaultHistoryFile))
 
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)

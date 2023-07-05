@@ -38,6 +38,7 @@ const (
 // Config represents a configuration for a HTTP service.
 type Config struct {
 	BindAddress             string         `toml:"bind-address"`
+	Domain                  string         `toml:"domain"`
 	AuthEnabled             bool           `toml:"auth-enabled"`
 	WeakPwdPath             string         `toml:"weakpwd-path"`
 	LogEnabled              bool           `toml:"log-enabled"`
@@ -76,6 +77,7 @@ type Config struct {
 	QueryMemoryLimitEnabled bool           `toml:"query-memory-limit-enabled"`
 	ChunkReaderParallel     int            `toml:"chunk-reader-parallel"`
 	ReadBlockSize           toml.Size      `toml:"read-block-size"`
+	TimeFilterProtection    bool           `toml:"time-filter-protection"`
 }
 
 // NewHttpConfig returns a new Config with default settings.
@@ -102,6 +104,7 @@ func NewConfig() Config {
 		QueryMemoryLimitEnabled: true,
 		ChunkReaderParallel:     cpu.GetCpuNum(),
 		ReadBlockSize:           toml.Size(DefaultBlockSize),
+		TimeFilterProtection:    false,
 	}
 }
 

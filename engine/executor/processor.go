@@ -27,6 +27,7 @@ import (
 	"github.com/openGemini/openGemini/engine/immutable"
 	"github.com/openGemini/openGemini/lib/record"
 	"github.com/openGemini/openGemini/lib/tracing"
+	"github.com/openGemini/openGemini/lib/util"
 )
 
 const (
@@ -90,7 +91,7 @@ func (p *ChunkPort) Connect(to Port) {
 }
 
 func (p *ChunkPort) ConnectNoneCache(to Port) {
-	p.State = make(chan Chunk, 0)
+	p.State = make(chan Chunk)
 	to.(*ChunkPort).State = p.State
 }
 
@@ -132,7 +133,7 @@ func (p *ChunkPort) Release() {}
 
 func Connect(from Port, to Port) error {
 	if !from.Equal(to) {
-		return fmt.Errorf("Can't connect different ports(%v and %v)", from, to)
+		return fmt.Errorf("can't connect different ports(%v and %v)", from, to)
 	}
 
 	from.Connect(to)
@@ -251,10 +252,10 @@ type SeriesRecord struct {
 	err  error
 	rec  *record.Record
 	file immutable.TSSPFile
-	tr   *record.TimeRange
+	tr   *util.TimeRange
 }
 
-func NewSeriesRecord(rec *record.Record, sid uint64, file immutable.TSSPFile, seq uint64, tr *record.TimeRange, err error) *SeriesRecord {
+func NewSeriesRecord(rec *record.Record, sid uint64, file immutable.TSSPFile, seq uint64, tr *util.TimeRange, err error) *SeriesRecord {
 	return &SeriesRecord{sid, seq, err, rec, file, tr}
 }
 
@@ -278,7 +279,7 @@ func (r *SeriesRecord) GetSeq() uint64 {
 	return r.seq
 }
 
-func (r *SeriesRecord) GetTr() *record.TimeRange {
+func (r *SeriesRecord) GetTr() *util.TimeRange {
 	return r.tr
 }
 
@@ -405,7 +406,7 @@ func (p *DownSampleStatePort) Connect(to Port) {
 
 func (p *DownSampleStatePort) ConnectStateReserve(to Port) {
 	if p.State == nil {
-		p.State = make(chan *DownSampleState, 0)
+		p.State = make(chan *DownSampleState)
 	}
 	to.(*DownSampleStatePort).State = p.State
 }

@@ -24,10 +24,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openGemini/openGemini/engine/immutable/readcache"
+	"github.com/openGemini/openGemini/lib/config"
 	"github.com/openGemini/openGemini/lib/fileops"
 	"github.com/openGemini/openGemini/lib/interruptsignal"
 	"github.com/openGemini/openGemini/lib/rand"
+	"github.com/openGemini/openGemini/lib/readcache"
 	"github.com/openGemini/openGemini/lib/record"
 	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
@@ -45,12 +46,12 @@ func TestFileWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := ""
-	fw := newFileWriter(fd, false, true, &lockPath)
+	fw := newTsspFileWriter(fd, false, true, &lockPath)
 	if fn != fw.Name() {
 		t.Fatalf("invalid writer name")
 	}
 
-	if fw.DataWriter() == nil {
+	if fw.GetFileWriter() == nil {
 		t.Fatalf("invalid file writer")
 	}
 
@@ -92,6 +93,7 @@ func TestFileIterator(t *testing.T) {
 	recRows := conf.maxRowsPerSegment*9 + 1
 	lockPath := ""
 	store := NewTableStore(testCompDir, &lockPath, &tier, true, conf)
+	store.SetImmTableType(config.TSSTORE)
 	defer store.Close()
 
 	store.CompactionEnable()
@@ -119,7 +121,7 @@ func TestFileIterator(t *testing.T) {
 	for i := 0; i < filesN; i++ {
 		ids, data := genTestData(idMinMax.min, idCount, recRows, &startValue, &tm)
 		fileName := NewTSSPFileName(store.NextSequence(), 0, 0, 0, true, &lockPath)
-		msb := AllocMsBuilder(store.path, "mst", &lockPath, conf, 10, fileName, store.Tier(), nil, 2)
+		msb := NewMsBuilder(store.path, "mst", &lockPath, conf, 10, fileName, store.Tier(), nil, 2)
 		write(ids, data, msb)
 
 		for j, id := range ids {
@@ -232,6 +234,7 @@ func TestMmsTables_LevelCompact_20ID10Segment_SegLimit(t *testing.T) {
 	recRows := conf.maxRowsPerSegment*2 + 1
 	lockPath := ""
 	store := NewTableStore(testCompDir, &lockPath, &tier, true, conf)
+	store.SetImmTableType(config.TSSTORE)
 	defer store.Close()
 
 	store.CompactionEnable()
@@ -248,8 +251,6 @@ func TestMmsTables_LevelCompact_20ID10Segment_SegLimit(t *testing.T) {
 
 	check := func(name string, seq string, ids []uint64, orig []*record.Record) {
 		f := store.File(name, seq, true)
-		defer f.Unref()
-		defer f.UnrefFileReader()
 		contains, err := f.Contains(idMinMax.min)
 		if err != nil || !contains {
 			t.Fatalf("show contain series id:%v, but not find, error:%v", idMinMax.min, err)
@@ -332,7 +333,7 @@ func TestMmsTables_LevelCompact_20ID10Segment_SegLimit(t *testing.T) {
 	for i := 0; i < filesN; i++ {
 		ids, data := genTestData(idMinMax.min, idCount, recRows, &startValue, &tm)
 		fileName := NewTSSPFileName(store.NextSequence(), 0, 0, 0, true, &lockPath)
-		msb := AllocMsBuilder(store.path, "mst", &lockPath, conf, 10, fileName, store.Tier(), nil, 2)
+		msb := NewMsBuilder(store.path, "mst", &lockPath, conf, 10, fileName, store.Tier(), nil, 2)
 		write(ids, data, msb)
 
 		for j, id := range ids {
@@ -595,6 +596,7 @@ func TestFileSizeExceedLimit(t *testing.T) {
 	tier := uint64(util.Hot)
 	lockPath := ""
 	store := NewTableStore(testCompDir, &lockPath, &tier, true, conf)
+	store.SetImmTableType(config.TSSTORE)
 	defer store.Close()
 
 	rows := size/2 + 10
@@ -606,7 +608,7 @@ func TestFileSizeExceedLimit(t *testing.T) {
 	oldIds := make([]uint64, 0, filesN)
 	for i := 0; i < filesN; i++ {
 		fileName := NewTSSPFileName(store.NextSequence(), 0, 0, 0, true, &lockPath)
-		msb := AllocMsBuilder(store.path, "mst", &lockPath, conf, 1, fileName, store.Tier(), nil, size)
+		msb := NewMsBuilder(store.path, "mst", &lockPath, conf, 1, fileName, store.Tier(), nil, size)
 		rec := genIntColumn(&startTime, rows, 2)
 		if err := msb.WriteData(id, rec); err != nil {
 			t.Fatal(err)
@@ -696,6 +698,7 @@ func TestFileSizeExceedLimit1(t *testing.T) {
 	tier := uint64(util.Warm)
 	lockPath := ""
 	store := NewTableStore(testCompDir, &lockPath, &tier, true, conf)
+	store.SetImmTableType(config.TSSTORE)
 	defer store.Close()
 
 	rows := 30000
@@ -706,7 +709,7 @@ func TestFileSizeExceedLimit1(t *testing.T) {
 	oldIds := make([]uint64, 0, filesN)
 	for i := 0; i < filesN; i++ {
 		fileName := NewTSSPFileName(store.NextSequence(), 0, 0, 0, true, &lockPath)
-		msb := AllocMsBuilder(store.path, "mst", &lockPath, conf, 1, fileName, store.Tier(), nil, 1024)
+		msb := NewMsBuilder(store.path, "mst", &lockPath, conf, 1, fileName, store.Tier(), nil, 1024)
 		rec := genIntColumn(&startTime, rows, 2)
 		if err := msb.WriteData(id, rec); err != nil {
 			t.Fatal(err)

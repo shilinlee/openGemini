@@ -21,7 +21,7 @@ import (
 	"hash/crc32"
 
 	"github.com/openGemini/openGemini/lib/numberenc"
-	"github.com/openGemini/openGemini/lib/record"
+	"github.com/openGemini/openGemini/lib/util"
 )
 
 type DownSampleFilesInfo struct {
@@ -32,7 +32,7 @@ type DownSampleFilesInfo struct {
 	NewFiles [][]string
 }
 
-func (info DownSampleFilesInfo) reset() {
+func (info *DownSampleFilesInfo) reset() {
 	info.Names = info.Names[:0]
 	info.OldFiles = info.OldFiles[:0]
 	info.NewFiles = info.NewFiles[:0]
@@ -75,13 +75,12 @@ func (info *DownSampleFilesInfo) unmarshal(src []byte) ([]byte, error) {
 		return src, fmt.Errorf("too small data for name length, %v", len(src))
 	}
 	info.taskID = numberenc.UnmarshalUint64(src)
-	l := int(info.taskID)
 	src = src[8:]
 
 	info.level = int(numberenc.UnmarshalInt64(src))
-	l, src = info.level, src[8:]
+	_, src = info.level, src[8:]
 
-	l = int(numberenc.UnmarshalUint16(src))
+	l := int(numberenc.UnmarshalUint16(src))
 	src = src[2:]
 	if len(src) < l+4 {
 		return src, fmt.Errorf("too small data for name, %v < %v", len(src), l+4)
@@ -98,7 +97,7 @@ func (info *DownSampleFilesInfo) unmarshal(src []byte) ([]byte, error) {
 		if len(src) < l {
 			return src, fmt.Errorf("too small data for name, %v < %v", len(src), l)
 		}
-		info.Names[i], src = record.Bytes2str(src[:l]), src[l:]
+		info.Names[i], src = util.Bytes2str(src[:l]), src[l:]
 	}
 
 	if len(src) < 2 {
@@ -129,7 +128,7 @@ func (info *DownSampleFilesInfo) unmarshal(src []byte) ([]byte, error) {
 			if len(src) < l {
 				return src, fmt.Errorf("too small data for newFiles, %v < %v", len(src), l)
 			}
-			info.OldFiles[i][k], src = record.Bytes2str(src[:l]), src[l:]
+			info.OldFiles[i][k], src = util.Bytes2str(src[:l]), src[l:]
 		}
 	}
 
@@ -161,7 +160,7 @@ func (info *DownSampleFilesInfo) unmarshal(src []byte) ([]byte, error) {
 			if len(src) < l {
 				return src, fmt.Errorf("too small data for newFiles, %v < %v", len(src), l)
 			}
-			info.NewFiles[i][k], src = record.Bytes2str(src[:l]), src[l:]
+			info.NewFiles[i][k], src = util.Bytes2str(src[:l]), src[l:]
 		}
 	}
 	return src, nil

@@ -88,7 +88,7 @@ func doRun(args ...string) error {
 		crypto.Destruct()
 		fmt.Println("Single service shutdown successfully!")
 	case "version":
-		fmt.Printf(app.VERSION, TsServer, TsVersion, TsCommit, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf(app.VERSION, TsServer, TsVersion, TsBranch, TsCommit, runtime.GOOS, runtime.GOARCH)
 	default:
 		return fmt.Errorf(serverUsage)
 	}
@@ -104,7 +104,7 @@ func runMeta(args ...string) (*app.Command, error) {
 	}
 	cmdMeta.Logo = app.METALOGO
 	cmdMeta.Usage = runUsage
-	cmdMeta.Config = config.NewTSMeta()
+	cmdMeta.Config = config.NewTSMeta(false)
 	cmdMeta.ServiceName = "meta"
 	cmdMeta.NewServerFunc = meta.NewServer
 
@@ -143,7 +143,7 @@ func runStore(args ...string) (*app.Command, error) {
 	}
 	cmdStore.Logo = app.STORELOGO
 	cmdStore.Usage = runUsage
-	cmdStore.Config = config.NewTSStore()
+	cmdStore.Config = config.NewTSStore(false)
 	cmdStore.ServiceName = "store"
 	cmdStore.NewServerFunc = store.NewServer
 

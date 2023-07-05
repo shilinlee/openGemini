@@ -39,7 +39,7 @@ var addr = "127.0.0.1:8507"
 func mockHTTPServer(authEnabled bool, addr string, t *testing.T) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Error(err)
 	}
 
 	pusher := mockStatisticsPusher()
@@ -50,12 +50,12 @@ func mockHTTPServer(authEnabled bool, addr string, t *testing.T) {
 	h.client = metaclient.NewClient("", false, 1)
 	err = http.Serve(ln, h)
 	if err != nil && !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("listener failed: addr=%s, err=%s", ln.Addr(), err)
+		t.Errorf("listener failed: addr=%s, err=%s", ln.Addr(), err)
 	}
 }
 
 func mockStatisticsPusher() *statisticsPusher.StatisticsPusher {
-	config := config.NewTSMeta()
+	config := config.NewTSMeta(true)
 	config.Monitor.StoreEnabled = true
 	config.Monitor.Pushers = "http"
 
@@ -112,7 +112,7 @@ func TestHttpHandler_ServeHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err = mms.GetStore().data.CreateDatabase("test", nil, nil); err != nil {
+	if err = mms.GetStore().data.CreateDatabase("test", nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,4 +196,29 @@ func (s *MockIStore) movePt(db string, pt uint32, to uint64) error {
 func TestServeExpandGroups(t *testing.T) {
 	handler := newHttpHandler(&config.Meta{}, &MockIStore{})
 	handler.serveExpandGroups(&MockResponseWriter{}, nil)
+}
+
+func TestGetDBBriefInfo_FromStore(t *testing.T) {
+	dir := t.TempDir()
+	mms, err := NewMockMetaService(dir, testIp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mms.Close()
+
+	databases := make(map[string]*meta2.DatabaseInfo)
+	databases["db0"] = &meta2.DatabaseInfo{
+		Name:           "db0",
+		EnableTagArray: true,
+	}
+	mms.GetStore().data = &meta2.Data{Databases: databases}
+	_, err = mms.GetStore().getDBBriefInfo("db0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mms.GetStore().getDBBriefInfo("db1")
+	if err == nil {
+		t.Fatal(err)
+	}
 }

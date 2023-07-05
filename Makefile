@@ -27,7 +27,7 @@ PACKAGES_OPEN_GEMINI_TESTS ?= $$($(PACKAGE_LIST_OPEN_GEMINI_TESTS))
 
 COPYRIGHT_EXCEPT  := "open_src|tests|lib/netstorage/data/data.pb.go|lib/statisticsPusher/statistics/handler_statistics.go|app/ts-meta/meta/snapshot.go|engine/index/tsi/tag_filters.go|engine/index/tsi/tag_filter_test.go|engine/index/mergeindex/item.go"
 COPYRIGHT_GOFILE  := $$(find . -name '*.go' | grep -vE $(COPYRIGHT_EXCEPT))
-COPYRIGHT_HEADER  := "Copyright 2022 Huawei Cloud Computing Technologies Co., Ltd."
+COPYRIGHT_HEADER  := "Copyright 2022|2023 Huawei Cloud Computing Technologies Co., Ltd."
 
 .PHONY: go-build style-check gotest integration-test buildsucc
 
@@ -48,7 +48,7 @@ licence-check:
 	@echo "run licence check"
 	@for file in $(COPYRIGHT_GOFILE); \
 		do \
-  			cat $$file | grep -qs $(COPYRIGHT_HEADER) || { echo $$file "has no licence header" >> licence-check.log; }; \
+  			cat $$file | grep -qsE $(COPYRIGHT_HEADER) || { echo $$file "has no licence header" >> licence-check.log; }; \
 	 	done
 	@if [ -f licence-check.log ]; \
   	then \

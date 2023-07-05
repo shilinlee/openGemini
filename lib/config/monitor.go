@@ -121,6 +121,9 @@ type MonitorQuery struct {
 	QueryEnable   bool          `toml:"query-enable"`
 	HttpEndpoint  string        `toml:"http-endpoint"`
 	QueryInterval toml.Duration `toml:"query-interval"`
+	Username      string        `toml:"username"`
+	Password      string        `toml:"password"`
+	HTTPSEnabled  bool          `toml:"https-enable"`
 }
 
 func newMonitorQuery() MonitorQuery {
@@ -132,10 +135,13 @@ func newMonitorQuery() MonitorQuery {
 }
 
 type MonitorReport struct {
-	Address    string        `toml:"address"`
-	Database   string        `toml:"database"`
-	Rp         string        `toml:"rp"`
-	RpDuration toml.Duration `toml:"rp-duration"`
+	Address      string        `toml:"address"`
+	Database     string        `toml:"database"`
+	Rp           string        `toml:"rp"`
+	RpDuration   toml.Duration `toml:"rp-duration"`
+	Username     string        `toml:"username"`
+	Password     string        `toml:"password"`
+	HTTPSEnabled bool          `toml:"https-enable"`
 }
 
 func newMonitorReport() MonitorReport {

@@ -27,6 +27,7 @@ import (
 	"github.com/influxdata/influxdb/services/retention"
 	"github.com/influxdata/influxdb/toml"
 	"github.com/openGemini/openGemini/lib/errno"
+	"github.com/openGemini/openGemini/lib/iodetector"
 	"github.com/openGemini/openGemini/lib/memory"
 	httpdConf "github.com/openGemini/openGemini/open_src/influx/httpd/config"
 	"github.com/openGemini/openGemini/services/stream"
@@ -48,7 +49,6 @@ const (
 	DefaultMaxConcurrentCompactions = 0
 
 	DefaultWriteColdDuration = 5 * time.Second
-	Is32BitPtr               = (^uintptr(0) >> 32) == 0
 
 	DefaultSnapshotThroughput      = 48 * MB
 	DefaultSnapshotThroughputBurst = 64 * MB
@@ -58,9 +58,14 @@ const (
 	MinFlavorMemory                = 8 * GB
 	MaxFlavorMemory                = 512 * GB
 
-	IndexFileDirectory = "index"
-	DataDirectory      = "data"
-	WalDirectory       = "wal"
+	DefaultIngesterAddress = "127.0.0.1:8400"
+	DefaultSelectAddress   = "127.0.0.1:8401"
+	DefaultDataDir         = "/tmp/openGemini/data"
+	DefaultWalDir          = "/tmp/openGemini/wal"
+	DefaultMetaDir         = "/tmp/openGemini/meta"
+	IndexFileDirectory     = "index"
+	DataDirectory          = "data"
+	WalDirectory           = "wal"
 )
 
 // TSStore represents the configuration format for the influxd binary.
@@ -80,13 +85,17 @@ type TSStore struct {
 	Stream            stream.Config    `toml:"stream"`
 
 	// TLS provides configuration options for all https endpoints.
-	TLS      tlsconfig.Config `toml:"tls"`
-	Analysis Castor           `toml:"castor"`
-	Sherlock *SherlockConfig  `toml:"sherlock"`
+	TLS        tlsconfig.Config   `toml:"tls"`
+	Analysis   Castor             `toml:"castor"`
+	Sherlock   *SherlockConfig    `toml:"sherlock"`
+	IODetector *iodetector.Config `toml:"io-detector"`
+
+	Meta      *Meta      `toml:"meta"`
+	ClvConfig *ClvConfig `toml:"clv_config"`
 }
 
 // NewTSStore returns an instance of Config with reasonable defaults.
-func NewTSStore() *TSStore {
+func NewTSStore(enableGossip bool) *TSStore {
 	c := &TSStore{}
 
 	c.Common = NewCommon()
@@ -100,11 +109,15 @@ func NewTSStore() *TSStore {
 	c.Retention = retention.NewConfig()
 	c.DownSample = retention.NewConfig()
 	c.HierarchicalStore = retention.NewConfig()
-	c.Gossip = NewGossip()
+	c.Gossip = NewGossip(enableGossip)
 
 	c.Analysis = NewCastor()
 	c.Stream = stream.NewConfig()
 	c.Sherlock = NewSherlockConfig()
+	c.IODetector = iodetector.NewIODetector()
+
+	c.Meta = NewMeta()
+	c.ClvConfig = NewClvConfig()
 	return c
 }
 
@@ -126,6 +139,7 @@ func (c *TSStore) Validate() error {
 		c.Spdy,
 		c.Analysis,
 		c.Sherlock,
+		c.IODetector,
 	}
 
 	for _, item := range items {
@@ -200,6 +214,7 @@ type Store struct {
 	ReadCacheLimit       toml.Size `toml:"read-cache-limit"`
 	WriteConcurrentLimit int       `toml:"write-concurrent-limit"`
 	OpenShardLimit       int       `toml:"open-shard-limit"`
+	MaxSeriesPerDatabase int       `toml:"max-series-per-database"`
 
 	DownSampleWriteDrop bool `toml:"downsample-write-drop"`
 
@@ -219,6 +234,11 @@ func NewStore() Store {
 	memorySize := toml.Size(size * KB)
 	readCacheLimit := getCacheLimitSize(uint64(memorySize))
 	return Store{
+		IngesterAddress:              DefaultIngesterAddress,
+		SelectAddress:                DefaultSelectAddress,
+		DataDir:                      DefaultDataDir,
+		WALDir:                       DefaultWalDir,
+		MetaDir:                      DefaultMetaDir,
 		Engine:                       DefaultEngine,
 		ImmTableMaxMemoryPercentage:  DefaultImmutableMaxMemoryPercent,
 		CompactFullWriteColdDuration: toml.Duration(DefaultCompactFullWriteColdDuration),
@@ -231,7 +251,7 @@ func NewStore() Store {
 		MemDataReadEnabled:           true,
 		CacheDataBlock:               false,
 		CacheMetaBlock:               false,
-		EnableMmapRead:               !Is32BitPtr,
+		EnableMmapRead:               false,
 		ReadCacheLimit:               toml.Size(readCacheLimit),
 		WriteConcurrentLimit:         0,
 		WalSyncInterval:              toml.Duration(DefaultWALSyncInterval),
@@ -354,4 +374,15 @@ func NewOpsMonitorConfig() *OpsMonitor {
 
 func getCacheLimitSize(size uint64) uint64 {
 	return size * DefaultReadCachePercent / 100
+}
+
+type ClvConfig struct {
+	QMax      int    `toml:"q-max"`
+	Threshold int    `toml:"token-threshold"`
+	DocCount  uint32 `toml:"document-count"`
+	Enabled   bool   `toml:"enabled"`
+}
+
+func NewClvConfig() *ClvConfig {
+	return &ClvConfig{}
 }

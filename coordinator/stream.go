@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +32,7 @@ import (
 	"github.com/openGemini/openGemini/lib/config"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/logger"
+	"github.com/openGemini/openGemini/lib/netstorage"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	meta2 "github.com/openGemini/openGemini/open_src/influx/meta"
 	"github.com/openGemini/openGemini/open_src/influx/query"
@@ -62,17 +62,14 @@ func newStreamTask(info *meta2.StreamInfo, srcSchema, dstSchema map[string]int32
 	tagDimKeys, fieldIndexKeys := buildTagsFields(info, srcSchema)
 	w.tagDimKeys = make([]string, len(tagDimKeys))
 	w.fieldIndexKeys = make([]string, len(fieldIndexKeys))
-	for i := range tagDimKeys {
-		w.tagDimKeys[i] = tagDimKeys[i]
-	}
-	for i := range fieldIndexKeys {
-		w.fieldIndexKeys[i] = fieldIndexKeys[i]
-	}
+
+	copy(w.tagDimKeys, tagDimKeys)
+	copy(w.fieldIndexKeys, fieldIndexKeys)
 	return w, nil
 }
 
 type TSDBStore interface {
-	WriteRows(nodeID uint64, database, rp string, pt uint32, shard uint64, streamShardIdList []uint64, rows *[]influx.Row, timeout time.Duration) error
+	WriteRows(ctx *netstorage.WriteContext, nodeID uint64, pt uint32, database, rp string, timeout time.Duration) error
 }
 
 type Stream struct {
@@ -226,7 +223,7 @@ func (s *Stream) calculate(
 
 	task, ok := s.tasks[si.Name]
 	if !ok {
-		return errors.New(fmt.Sprintf("%s have no task", si.Name))
+		return fmt.Errorf("%s have no task", si.Name)
 	}
 
 	err := ctx.checkDBRP(si.DesMst.Database, si.DesMst.RetentionPolicy, s)
@@ -244,7 +241,7 @@ func (s *Stream) calculate(
 		return err
 	}
 
-	err = s.mapRowsToShard(si, task, pw, ctx, iCtx, idx)
+	err = s.mapRowsToShard(si, task, ctx, iCtx, idx)
 	if err != nil {
 		return err
 	}
@@ -263,17 +260,11 @@ func (s *Stream) calculateWindow(rows []*influx.Row, si *meta2.StreamInfo, task 
 		et = et - 1
 		v, ok := ctx.dataCache[groupKey]
 		if !ok {
-			v = make(map[int64][]*float64)
-			vs, ok := v[et]
-			if !ok {
-				vs = make([]*float64, len(task.calls))
-				v[et] = vs
-			}
-			ctx.dataCache[groupKey] = v
-		}
-		if vs, ok := v[et]; !ok {
-			vs = make([]*float64, len(task.calls))
-			v[et] = vs
+			ctx.dataCache[groupKey] = make(map[int64][]*float64)
+			v = ctx.dataCache[groupKey]
+			ctx.dataCache[groupKey][et] = make([]*float64, len(task.calls))
+		} else if _, ok := v[et]; !ok {
+			v[et] = make([]*float64, len(task.calls))
 		}
 		for i := range task.calls {
 			id, ok := r.ColumnToIndex[task.calls[i].name]
@@ -284,8 +275,7 @@ func (s *Stream) calculateWindow(rows []*influx.Row, si *meta2.StreamInfo, task 
 			fv := r.Fields[id-r.Tags.Len()]
 			if fv.Type == influx.Field_Type_String {
 				// the computation of string type is not supported
-				errStr := fmt.Sprintf("the %s string type is not supported for stream task %s", fv.Key, si.Name)
-				return errors.New(errStr)
+				return fmt.Errorf("the %s string type is not supported for stream task %s", fv.Key, si.Name)
 			}
 			curVal := fv.NumValue
 			if task.calls[i].call == "count" {
@@ -307,7 +297,7 @@ func (s *Stream) calculateWindow(rows []*influx.Row, si *meta2.StreamInfo, task 
 }
 
 func (s *Stream) mapRowsToShard(
-	si *meta2.StreamInfo, task *streamTask, pw *PointsWriter, ctx *streamCtx, iCtx *injestionCtx, idx int,
+	si *meta2.StreamInfo, task *streamTask, ctx *streamCtx, iCtx *injestionCtx, idx int,
 ) error {
 	wRows := iCtx.getPRowsPool()
 
@@ -389,15 +379,13 @@ func (s *Stream) mapRowsToShard(
 			r.Name = mstName
 			r.Timestamp = t
 			r.StreamOnly = true
-			err, pErr, sh := s.updateShardGroupAndShardKey(si.DesMst.Database, si.DesMst.RetentionPolicy, r, ctx, si.Dims)
+			err, sh, pErr := s.updateShardGroupAndShardKey(si.DesMst.Database, si.DesMst.RetentionPolicy, r, ctx, si.Dims)
 			if err != nil {
 				return err
 			}
 			if pErr != nil {
 				continue
 			}
-			id := strconv.FormatInt(int64(sh.ID), 10)
-			iCtx.getShardMap().Set(id, sh)
 			r.StreamId = append(r.StreamId, si.ID)
 			m, exist := srcStreamDstShardIdMap[sh.ID]
 			if !exist {
@@ -405,9 +393,7 @@ func (s *Stream) mapRowsToShard(
 			}
 			m[si.ID] = sh.ID
 			srcStreamDstShardIdMap[sh.ID] = m
-			if err = pw.MapRowToShard(iCtx, id, r); err != nil {
-				return err
-			}
+			iCtx.setShardRow(sh, r)
 		}
 	}
 	*wRows = (*wRows)[:size]
@@ -415,7 +401,7 @@ func (s *Stream) mapRowsToShard(
 }
 
 func (s *Stream) updateShardGroupAndShardKey(database, retentionPolicy string, r *influx.Row, ctx *streamCtx,
-	dims []string) (err error, partialErr error, sh *meta2.ShardInfo) {
+	dims []string) (err error, sh *meta2.ShardInfo, partialErr error) {
 	var wh *writeHelper
 	var di *meta2.DatabaseInfo
 	var shardKeyInfo **meta2.ShardKeyInfo
@@ -427,8 +413,8 @@ func (s *Stream) updateShardGroupAndShardKey(database, retentionPolicy string, r
 	shardKeyInfo = &ctx.shardKeyInfo
 	mi = ctx.ms
 	aliveShardIdxes = &ctx.aliveShardIdxes
-
-	sg, sameSg, err := wh.createShardGroup(database, retentionPolicy, time.Unix(0, r.Timestamp))
+	engineType := mi.EngineType
+	sg, sameSg, err := wh.createShardGroup(database, retentionPolicy, time.Unix(0, r.Timestamp), engineType)
 	if err != nil {
 		return
 	}
@@ -522,9 +508,9 @@ func (s *Stream) GenerateGroupKey(ctx *streamCtx, keys []string, value *influx.R
 				builder.WriteString(value.Fields[j].Key)
 				builder.WriteString("-")
 			}
-			err = errors.New(fmt.Sprintf("the group key is incomplite, r.TagKey-r.FieldKey: %s,", builder.String()))
+			err = fmt.Errorf("the group key is incomplite, r.TagKey-r.FieldKey: %s", builder.String())
 		} else {
-			err = errors.New(fmt.Sprintf("the group key is incomplite, r.TagKey: %s,", builder.String()))
+			err = fmt.Errorf("the group key is incomplite, r.TagKey: %s", builder.String())
 		}
 		return "", err
 	}
@@ -552,7 +538,7 @@ func BuildFieldCall(info *meta2.StreamInfo, srcSchema map[string]int32, destSche
 		case "count":
 			calls[i].callFunc = atomic2.AddFloat64
 		default:
-			return nil, errors.New(fmt.Sprintf("not support stream func %v", calls[i].call))
+			return nil, fmt.Errorf("not support stream func %v", calls[i].call)
 		}
 	}
 	return calls, nil

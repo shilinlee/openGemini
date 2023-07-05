@@ -17,6 +17,7 @@ limitations under the License.
 package collector
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/openGemini/openGemini/lib/config"
+	"github.com/openGemini/openGemini/lib/crypto"
 	"github.com/openGemini/openGemini/lib/logger"
 	"github.com/valyala/fastjson"
 	"go.uber.org/zap"
@@ -65,11 +67,22 @@ type queryMetrics struct {
 }
 
 func NewQueryMetric(logger *logger.Logger, conf *config.MonitorQuery) *QueryMetric {
+	protocol := "http"
+	var defaultClient = http.DefaultClient
+	if conf.HTTPSEnabled {
+		protocol = "https"
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		defaultClient = &http.Client{
+			Transport: tr,
+		}
+	}
 	return &QueryMetric{
 		done:   make(chan struct{}),
-		url:    fmt.Sprintf("http://%s/query", conf.HttpEndpoint),
+		url:    fmt.Sprintf("%s://%s/query", protocol, conf.HttpEndpoint),
 		conf:   conf,
-		Client: http.DefaultClient,
+		Client: defaultClient,
 		logger: logger,
 		queryMetrics: &queryMetrics{
 			SeriesMap: make(map[string]map[string]int64),
@@ -117,6 +130,7 @@ func (q *QueryMetric) queryExecute(db, cmd string) ([]byte, error) {
 		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s?%s", q.url, params.Encode()), nil)
 		headers := http.Header{}
 		headers.Add("Content-Type", "application/json")
+		req.SetBasicAuth(q.conf.Username, crypto.Decrypt(q.conf.Password))
 		req.Header = headers
 		resp, err := q.Client.Do(req)
 		if err == nil {

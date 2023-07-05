@@ -17,17 +17,18 @@ limitations under the License.
 package immutable
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
 
 	"github.com/influxdata/influxdb/pkg/bloom"
-	"github.com/openGemini/openGemini/engine/immutable/readcache"
 	"github.com/openGemini/openGemini/lib/bufferpool"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/fileops"
 	"github.com/openGemini/openGemini/lib/numberenc"
+	"github.com/openGemini/openGemini/lib/readcache"
 	"github.com/openGemini/openGemini/lib/record"
 	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
@@ -43,17 +44,14 @@ var (
 	errLoadFail   = func(v ...interface{}) error { return errno.NewError(errno.LoadFilesFailed, v...) }
 	errCreateFail = func(v ...interface{}) error { return errno.NewError(errno.CreateFileFailed, v...) }
 	errWriteFail  = func(v ...interface{}) error { return errno.NewError(errno.WriteFileFailed, v...) }
-	errRenameFail = func(v ...interface{}) error { return errno.NewError(errno.RenameFileFailed, v...) }
 	errRemoveFail = func(v ...interface{}) error { return errno.NewError(errno.RemoveFileFailed, v...) }
 	errReadFail   = func(v ...interface{}) error { return errno.NewError(errno.ReadFileFailed, v...) }
 	errOpenFail   = func(v ...interface{}) error { return errno.NewError(errno.OpenFileFailed, v...) }
-	errMapFail    = func(v ...interface{}) error { return errno.NewError(errno.MapFileFailed, v...) }
-	errCloseFail  = func(v ...interface{}) error { return errno.NewError(errno.MapFileFailed, v...) }
 )
 
-type TSSPFileReader struct {
+type tsspFileReader struct {
 	ref            int64
-	r              DiskFileReader
+	r              fileops.BasicFileReader
 	inited         int32
 	metaIndexItems []MetaIndex
 	trailer        Trailer
@@ -63,14 +61,13 @@ type TSSPFileReader struct {
 	fileSize       int64
 	avgChunkRows   int
 	maxChunkRows   int
-	mu             sync.RWMutex
 	openMu         sync.RWMutex
 
 	// in memory data and meta block
 	inMemBlock MemoryReader
 }
 
-func CreateTSSPFileReader(size int64, fd fileops.File, trailer *Trailer, tb *TableData, ver uint64, tmp bool, lockPath *string) (*TSSPFileReader, error) {
+func CreateTSSPFileReader(size int64, fd fileops.File, trailer *Trailer, tb *TableData, ver uint64, tmp bool, lockPath *string) (*tsspFileReader, error) {
 	if size <= minTableSize() {
 		log.Error("zero file size", zap.Int64("size", size))
 		panic("zero file size")
@@ -124,7 +121,7 @@ func CreateTSSPFileReader(size int64, fd fileops.File, trailer *Trailer, tb *Tab
 	}
 
 	r := getTSSPFileReader()
-	r.r = NewDiskFileReader(fd, lockPath)
+	r.r = fileops.NewFileReader(fd, lockPath)
 	r.trailer = Trailer{}
 	r.trailerOffset = size - int64(len(tb.trailerData))
 	r.fileSize = size
@@ -144,7 +141,7 @@ func CreateTSSPFileReader(size int64, fd fileops.File, trailer *Trailer, tb *Tab
 	return r, nil
 }
 
-func NewTSSPFileReader(name string, lockPath *string) (*TSSPFileReader, error) {
+func NewTSSPFileReader(name string, lockPath *string) (*tsspFileReader, error) {
 	var header [fileHeaderSize]byte
 	var footer [8]byte
 	fi, err := fileops.Stat(name)
@@ -173,7 +170,7 @@ func NewTSSPFileReader(name string, lockPath *string) (*TSSPFileReader, error) {
 		return nil, err
 	}
 
-	dr := NewDiskFileReader(fd, lockPath)
+	dr := fileops.NewFileReader(fd, lockPath)
 
 	hd := header[:]
 	hb, err := dr.ReadAt(0, uint32(len(header[:])), &hd)
@@ -183,9 +180,9 @@ func NewTSSPFileReader(name string, lockPath *string) (*TSSPFileReader, error) {
 		return nil, err
 	}
 
-	if record.Bytes2str(hb[:len(tableMagic)]) != tableMagic {
+	if util.Bytes2str(hb[:len(tableMagic)]) != tableMagic {
 		_ = dr.Close()
-		err = fmt.Errorf("invalid file(%v) magic: %v", name, record.Bytes2str(hb[:len(tableMagic)]))
+		err = fmt.Errorf("invalid file(%v) magic: %v", name, util.Bytes2str(hb[:len(tableMagic)]))
 		log.Error(err.Error())
 		err = errOpenFail(err)
 		return nil, err
@@ -238,7 +235,7 @@ func NewTSSPFileReader(name string, lockPath *string) (*TSSPFileReader, error) {
 	return r, nil
 }
 
-func (r *TSSPFileReader) copyMetaIndex(items []MetaIndex) {
+func (r *tsspFileReader) copyMetaIndex(items []MetaIndex) {
 	if cap(r.metaIndexItems) < len(items) {
 		r.metaIndexItems = make([]MetaIndex, len(items))
 	} else {
@@ -247,15 +244,15 @@ func (r *TSSPFileReader) copyMetaIndex(items []MetaIndex) {
 	copy(r.metaIndexItems, items)
 }
 
-func (r *TSSPFileReader) initialized() bool {
+func (r *tsspFileReader) initialized() bool {
 	return atomic.LoadInt32(&r.inited) == 1
 }
 
-func (r *TSSPFileReader) Open() error {
+func (r *tsspFileReader) Open() error {
 	return nil
 }
 
-func (r *TSSPFileReader) validate(offset, size int64) error {
+func (r *tsspFileReader) validate(offset, size int64) error {
 	if offset < r.trailer.dataOffset {
 		return fmt.Errorf("invlaid read offset, %v < %v", offset, r.trailer.dataOffset)
 	}
@@ -268,7 +265,10 @@ func (r *TSSPFileReader) validate(offset, size int64) error {
 	return nil
 }
 
-func (r *TSSPFileReader) FreeFileHandle() error {
+func (r *tsspFileReader) FreeFileHandle() error {
+	if r.ref != 0 {
+		return nil
+	}
 	if !r.r.IsOpen() {
 		return nil
 	}
@@ -280,7 +280,7 @@ func (r *TSSPFileReader) FreeFileHandle() error {
 	return nil
 }
 
-func (r *TSSPFileReader) ReadData(cm *ChunkMeta, segment int, dst *record.Record, decs *ReadContext) (*record.Record, error) {
+func (r *tsspFileReader) ReadData(cm *ChunkMeta, segment int, dst *record.Record, decs *ReadContext) (*record.Record, error) {
 	err := r.validate(cm.offset, int64(cm.size))
 	if err != nil {
 		log.Error(err.Error())
@@ -300,7 +300,7 @@ func (r *TSSPFileReader) ReadData(cm *ChunkMeta, segment int, dst *record.Record
 }
 
 // readSegmentMetaRecord read column meta to speedup
-func (r *TSSPFileReader) readSegmentMetaRecord(cm *ChunkMeta, dst *record.Record, decs *ReadContext, copied bool) (*record.Record, error) {
+func (r *tsspFileReader) readSegmentMetaRecord(cm *ChunkMeta, dst *record.Record, decs *ReadContext, copied bool) (*record.Record, error) {
 	var err error
 	ops := decs.ops
 
@@ -358,7 +358,7 @@ func columnData(chunk []byte, baseOffset int64, segOff int64, segSize uint32) []
 	return chunk[off : off+int64(segSize)]
 }
 
-func (r *TSSPFileReader) readSegmentRecord(cm *ChunkMeta, segment int, dst *record.Record, decs *ReadContext) (*record.Record, error) {
+func (r *tsspFileReader) readSegmentRecord(cm *ChunkMeta, segment int, dst *record.Record, decs *ReadContext) (*record.Record, error) {
 	var err error
 	var chunkData []byte
 	if cm.size < defaultIoSize {
@@ -424,7 +424,7 @@ func (r *TSSPFileReader) readSegmentRecord(cm *ChunkMeta, segment int, dst *reco
 	return dst, nil
 }
 
-func (r *TSSPFileReader) decodeTimeColumn(cm *ChunkMeta, segment int, chunkData []byte,
+func (r *tsspFileReader) decodeTimeColumn(cm *ChunkMeta, segment int, chunkData []byte,
 	timeCol *record.ColVal, decs *ReadContext) error {
 
 	var tmData []byte
@@ -450,7 +450,7 @@ func (r *TSSPFileReader) decodeTimeColumn(cm *ChunkMeta, segment int, chunkData 
 	return err
 }
 
-func (r *TSSPFileReader) ReadMetaBlock(metaIdx int, id uint64, offset int64, size uint32, count uint32,
+func (r *tsspFileReader) ReadMetaBlock(metaIdx int, id uint64, offset int64, size uint32, count uint32,
 	dst *[]byte) (rb []byte, err error) {
 	if r.inMemBlock.MetaInMemory() {
 		rb = r.inMemBlock.ReadChunkMetaBlock(metaIdx, id, count)
@@ -468,7 +468,7 @@ func (r *TSSPFileReader) ReadMetaBlock(metaIdx int, id uint64, offset int64, siz
 		return nil, err
 	}
 
-	if readCacheEn {
+	if fileops.ReadCacheEn {
 		rb, err = r.GetTSSPFileBytes(offset, size, dst)
 	} else {
 		rb, err = r.Read(offset, size, dst)
@@ -481,7 +481,7 @@ func (r *TSSPFileReader) ReadMetaBlock(metaIdx int, id uint64, offset int64, siz
 	return rb, nil
 }
 
-func (r *TSSPFileReader) ReadDataBlock(offset int64, size uint32, dst *[]byte) (rb []byte, err error) {
+func (r *tsspFileReader) ReadDataBlock(offset int64, size uint32, dst *[]byte) (rb []byte, err error) {
 	if r.inMemBlock.DataInMemory() {
 		return r.inMemBlock.ReadDataBlock(offset, size, dst)
 	}
@@ -496,7 +496,7 @@ func (r *TSSPFileReader) ReadDataBlock(offset int64, size uint32, dst *[]byte) (
 	return rb, nil
 }
 
-func (r *TSSPFileReader) GetTSSPFileBytes(offset int64, size uint32, buf *[]byte) ([]byte, error) {
+func (r *tsspFileReader) GetTSSPFileBytes(offset int64, size uint32, buf *[]byte) ([]byte, error) {
 	var err error
 	cacheIns := readcache.GetReadCacheIns()
 	cacheKey := cacheIns.CreatCacheKey(r.FileName(), offset)
@@ -519,7 +519,7 @@ func (r *TSSPFileReader) GetTSSPFileBytes(offset int64, size uint32, buf *[]byte
 	return b, nil
 }
 
-func (r *TSSPFileReader) Read(offset int64, size uint32, dst *[]byte) ([]byte, error) {
+func (r *tsspFileReader) Read(offset int64, size uint32, dst *[]byte) ([]byte, error) {
 	if err := r.lazyInit(); err != nil {
 		errInfo := errno.NewError(errno.LoadFilesFailed)
 		log.Error("Read", zap.Error(errInfo))
@@ -540,20 +540,20 @@ func (r *TSSPFileReader) Read(offset int64, size uint32, dst *[]byte) ([]byte, e
 }
 
 func chunkMetaDataAndOffsets(src []byte, itemCount uint32) ([]byte, []uint32, error) {
-	if len(src) < (ChunkMetaMinLen+record.Uint32SizeBytes)*int(itemCount) {
+	if len(src) < (ChunkMetaMinLen+util.Uint32SizeBytes)*int(itemCount) {
 		err := fmt.Errorf("too smaller data for chunk meta block count:%v, datalen:%v", itemCount, len(src))
 		log.Error(err.Error())
 		return nil, nil, err
 	}
 
-	off := record.Uint32SizeBytes * int(itemCount)
+	off := util.Uint32SizeBytes * int(itemCount)
 	n := len(src) - off
-	offs := record.Bytes2Uint32SliceBigEndian(src[n:])
+	offs := numberenc.UnmarshalUint32Slice(src[n:], nil)
 
 	return src[:n], offs, nil
 }
 
-func (r *TSSPFileReader) unmarshalChunkMetas(src []byte, itemCount uint32, dst []ChunkMeta) ([]ChunkMeta, error) {
+func (r *tsspFileReader) unmarshalChunkMetas(src []byte, itemCount uint32, dst []ChunkMeta) ([]ChunkMeta, error) {
 	cmData, ofs, err := chunkMetaDataAndOffsets(src, itemCount)
 	if err != nil {
 		return nil, err
@@ -576,6 +576,7 @@ func (r *TSSPFileReader) unmarshalChunkMetas(src []byte, itemCount uint32, dst [
 		}
 		_, err = cm.unmarshal(cmData[:size])
 		if err != nil {
+			log.Error("failed to unmarshal chunk meta", zap.Error(err), zap.String("file", r.FileName()))
 			return nil, err
 		}
 		cmData = cmData[size:]
@@ -585,7 +586,7 @@ func (r *TSSPFileReader) unmarshalChunkMetas(src []byte, itemCount uint32, dst [
 	return dst, nil
 }
 
-func (r *TSSPFileReader) ReadChunkMetaData(metaIdx int, m *MetaIndex, dst []ChunkMeta) ([]ChunkMeta, error) {
+func (r *tsspFileReader) ReadChunkMetaData(metaIdx int, m *MetaIndex, dst []ChunkMeta) ([]ChunkMeta, error) {
 	var buf []byte
 	if !r.r.IsMmapRead() {
 		buf = bufferpool.Get()
@@ -608,12 +609,12 @@ func (r *TSSPFileReader) ReadChunkMetaData(metaIdx int, m *MetaIndex, dst []Chun
 	return r.unmarshalChunkMetas(rb, m.count, dst)
 }
 
-func (r *TSSPFileReader) BlockHeader(meta *ChunkMeta, dst []record.Field) ([]record.Field, error) {
+func (r *tsspFileReader) BlockHeader(meta *ChunkMeta, dst []record.Field) ([]record.Field, error) {
 	fields := unmarshalBlockHeader(meta, dst)
 	return fields, nil
 }
 
-func (r *TSSPFileReader) MetaIndexAt(idx int) (*MetaIndex, error) {
+func (r *tsspFileReader) MetaIndexAt(idx int) (*MetaIndex, error) {
 	if err := r.lazyInit(); err != nil {
 		errInfo := errno.NewError(errno.LoadFilesFailed)
 		log.Error("MetaIndexAt", zap.Error(errInfo))
@@ -626,7 +627,7 @@ func (r *TSSPFileReader) MetaIndexAt(idx int) (*MetaIndex, error) {
 	return &r.metaIndexItems[idx], nil
 }
 
-func (r *TSSPFileReader) MetaIndex(id uint64, tr record.TimeRange) (int, *MetaIndex, error) {
+func (r *tsspFileReader) MetaIndex(id uint64, tr util.TimeRange) (int, *MetaIndex, error) {
 	if err := r.lazyInit(); err != nil {
 		errInfo := errno.NewError(errno.LoadFilesFailed)
 		log.Error("MetaIndex", zap.Error(errInfo))
@@ -689,7 +690,7 @@ func searchChunkMeta(data []byte, offsets []uint32, sid uint64, dst *ChunkMeta) 
 	return nil, nil
 }
 
-func (r *TSSPFileReader) ChunkMeta(id uint64, offset int64, size, itemCount uint32, metaIdx int, dst *ChunkMeta, buffer *[]byte) (*ChunkMeta, error) {
+func (r *tsspFileReader) ChunkMeta(id uint64, offset int64, size, itemCount uint32, metaIdx int, dst *ChunkMeta, buffer *[]byte) (*ChunkMeta, error) {
 	needCopy := !r.r.IsMmapRead()
 	if needCopy {
 		if buffer == nil {
@@ -721,23 +722,23 @@ func (r *TSSPFileReader) ChunkMeta(id uint64, offset int64, size, itemCount uint
 	return searchChunkMeta(cmData, cmOffset, id, dst)
 }
 
-func (r *TSSPFileReader) ChunkMetaAt(index int) (*ChunkMeta, error) {
+func (r *tsspFileReader) ChunkMetaAt(index int) (*ChunkMeta, error) {
 	panic("impl me")
 }
 
-func (r *TSSPFileReader) Stat() *Trailer {
+func (r *tsspFileReader) Stat() *Trailer {
 	return &r.trailer
 }
 
-func (r *TSSPFileReader) MinMaxSeriesID() (min, max uint64, err error) {
+func (r *tsspFileReader) MinMaxSeriesID() (min, max uint64, err error) {
 	return r.trailer.minId, r.trailer.maxId, nil
 }
 
-func (r *TSSPFileReader) MinMaxTime() (min, max int64, err error) {
+func (r *tsspFileReader) MinMaxTime() (min, max int64, err error) {
 	return r.trailer.minTime, r.trailer.maxTime, nil
 }
 
-func (r *TSSPFileReader) Contains(id uint64, tm record.TimeRange) bool {
+func (r *tsspFileReader) Contains(id uint64, tm util.TimeRange) bool {
 	if !r.trailer.ContainsId(id) || !r.trailer.ContainsTime(tm) {
 		return false
 	}
@@ -748,23 +749,26 @@ func (r *TSSPFileReader) Contains(id uint64, tm record.TimeRange) bool {
 		return false
 	}
 
-	if !r.bloom.Contains(record.Uint64ToBytes(id)) {
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, id)
+
+	if !r.bloom.Contains(bytes) {
 		return false
 	}
 
 	return true
 }
 
-func (r *TSSPFileReader) ContainsTime(tm record.TimeRange) bool {
+func (r *tsspFileReader) ContainsTime(tm util.TimeRange) bool {
 	return tm.Overlaps(r.trailer.minTime, r.trailer.maxTime)
 }
 
-func (r *TSSPFileReader) ContainsId(id uint64) bool {
-	tr := record.TimeRange{Min: influxql.MinTime, Max: influxql.MaxTime}
+func (r *tsspFileReader) ContainsId(id uint64) bool {
+	tr := util.TimeRange{Min: influxql.MinTime, Max: influxql.MaxTime}
 	return r.Contains(id, tr)
 }
 
-func (r *TSSPFileReader) CreateTime() int64 {
+func (r *tsspFileReader) CreateTime() int64 {
 	name := r.r.Name()
 	tm, err := fileops.CreateTime(name)
 	if err != nil {
@@ -774,24 +778,24 @@ func (r *TSSPFileReader) CreateTime() int64 {
 	return tm.UnixNano()
 }
 
-func (r *TSSPFileReader) Name() string {
+func (r *tsspFileReader) Name() string {
 	return string(r.trailer.name)
 }
 
-func (r *TSSPFileReader) FileName() string {
+func (r *tsspFileReader) FileName() string {
 	return r.r.Name()
 }
 
-func (r *TSSPFileReader) FileSize() int64 {
+func (r *tsspFileReader) FileSize() int64 {
 	return r.fileSize
 }
 
-func (r *TSSPFileReader) InMemSize() int64 {
+func (r *tsspFileReader) InMemSize() int64 {
 	n := r.inMemBlock.Size()
 	return n
 }
 
-func (r *TSSPFileReader) Close() error {
+func (r *tsspFileReader) Close() error {
 	err := r.r.Close()
 
 	r.inMemBlock.FreeMemory()
@@ -801,19 +805,19 @@ func (r *TSSPFileReader) Close() error {
 	return err
 }
 
-func (r *TSSPFileReader) Rename(newName string) error {
+func (r *tsspFileReader) Rename(newName string) error {
 	return r.r.Rename(newName)
 }
 
-func (r *TSSPFileReader) Version() uint64 {
+func (r *tsspFileReader) Version() uint64 {
 	return r.version
 }
 
-func (r *TSSPFileReader) loadDiskFileReader() error {
+func (r *tsspFileReader) loadDiskFileReader() error {
 	return r.r.ReOpen()
 }
 
-func (r *TSSPFileReader) loadBloomFilter() error {
+func (r *tsspFileReader) loadBloomFilter() error {
 	if r.bloom != nil {
 		return nil
 	}
@@ -837,7 +841,7 @@ func (r *TSSPFileReader) loadBloomFilter() error {
 	return nil
 }
 
-func (r *TSSPFileReader) loadMetaIndex() error {
+func (r *tsspFileReader) loadMetaIndex() error {
 	if len(r.metaIndexItems) != 0 {
 		return nil
 	}
@@ -879,7 +883,7 @@ func (r *TSSPFileReader) loadMetaIndex() error {
 	return err
 }
 
-func (r *TSSPFileReader) LoadComponents() error {
+func (r *tsspFileReader) LoadComponents() error {
 	if r.initialized() {
 		return nil
 	}
@@ -911,7 +915,7 @@ func (r *TSSPFileReader) LoadComponents() error {
 	return nil
 }
 
-func (r *TSSPFileReader) loadIdTimes(isOrder bool, p *IdTimePairs) error {
+func (r *tsspFileReader) LoadIdTimes(isOrder bool, p *IdTimePairs) error {
 	var buf []byte
 	var err error
 
@@ -939,7 +943,7 @@ func (r *TSSPFileReader) loadIdTimes(isOrder bool, p *IdTimePairs) error {
 		return err
 	}
 
-	_, err = p.Unmarshal(isOrder, buf)
+	_, err = p.Unmarshal(isOrder || r.trailer.EqualData(IndexOfTimeStoreFlag, TimeStoreFlag), buf)
 	if err != nil {
 		err = errLoadFail(r.r.Name(), err)
 		log.Error("id time pairs unmarshal fail", zap.Error(err))
@@ -951,7 +955,7 @@ func (r *TSSPFileReader) loadIdTimes(isOrder bool, p *IdTimePairs) error {
 	return nil
 }
 
-func (r *TSSPFileReader) initChunkStat(p *IdTimePairs) {
+func (r *tsspFileReader) initChunkStat(p *IdTimePairs) {
 	var max, n int64
 	max = math.MinInt64
 	for _, rows := range p.Rows {
@@ -969,11 +973,11 @@ func (r *TSSPFileReader) initChunkStat(p *IdTimePairs) {
 	}
 }
 
-func (r *TSSPFileReader) FreeMemory() int64 {
+func (r *tsspFileReader) FreeMemory() int64 {
 	return r.inMemBlock.FreeMemory()
 }
 
-func (r *TSSPFileReader) LoadIntoMemory() error {
+func (r *tsspFileReader) LoadIntoMemory() error {
 	if err := r.LoadComponents(); err != nil {
 		log.Error("load index fail", zap.String("file", r.r.Name()), zap.Error(err))
 		return err
@@ -982,7 +986,7 @@ func (r *TSSPFileReader) LoadIntoMemory() error {
 	return r.inMemBlock.LoadIntoMemory(r.r, &r.trailer, r.metaIndexItems)
 }
 
-func (r *TSSPFileReader) reset() {
+func (r *tsspFileReader) reset() {
 	r.trailer.reset()
 	r.bloom = nil
 	r.version = version
@@ -997,11 +1001,11 @@ func (r *TSSPFileReader) reset() {
 	r.inMemBlock.Reset()
 }
 
-func (r *TSSPFileReader) AverageChunkRows() int {
+func (r *tsspFileReader) AverageChunkRows() int {
 	return r.avgChunkRows
 }
 
-func (r *TSSPFileReader) MaxChunkRows() int {
+func (r *tsspFileReader) MaxChunkRows() int {
 	return r.maxChunkRows
 }
 
@@ -1009,30 +1013,30 @@ var (
 	fileReaderPool = sync.Pool{}
 )
 
-func getTSSPFileReader() *TSSPFileReader {
+func getTSSPFileReader() *tsspFileReader {
 	v := fileReaderPool.Get()
 	if v == nil {
-		return &TSSPFileReader{}
+		return &tsspFileReader{}
 	}
 
-	r, ok := v.(*TSSPFileReader)
+	r, ok := v.(*tsspFileReader)
 	if !ok {
-		return &TSSPFileReader{}
+		return &tsspFileReader{}
 	}
 
 	return r
 }
 
-func putTSSPFileReader(r *TSSPFileReader) {
+func putTSSPFileReader(r *tsspFileReader) {
 	r.reset()
 	fileReaderPool.Put(r)
 }
 
 var (
-	_ TableReader = (*TSSPFileReader)(nil)
+	_ FileReader = (*tsspFileReader)(nil)
 )
 
-func (r *TSSPFileReader) lazyInit() error {
+func (r *tsspFileReader) lazyInit() error {
 	failpoint.Inject("lazyInit-error", func() {
 		failpoint.Return(fmt.Errorf("lazyInit error"))
 	})
@@ -1043,25 +1047,14 @@ func (r *TSSPFileReader) lazyInit() error {
 	return nil
 }
 
-func (r *TSSPFileReader) Ref() {
-	r.mu.RLock()
+func (r *tsspFileReader) Ref() {
 	atomic.AddInt64(&r.ref, 1)
-	r.mu.RUnlock()
-
 }
 
-func (r *TSSPFileReader) Unref() {
-	if atomic.AddInt64(&r.ref, -1) == 0 {
-		r.mu.Lock()
-		if r.ref == 0 {
-			if err := r.FreeFileHandle(); err != nil {
-				r.mu.Unlock()
-				panic("freeFile failed")
-			}
-		}
-		r.mu.Unlock()
-	}
-	if r.ref < 0 {
+func (r *tsspFileReader) Unref() int64 {
+	n := atomic.AddInt64(&r.ref, -1)
+	if n < 0 {
 		panic("file closed: " + r.FileName())
 	}
+	return n
 }

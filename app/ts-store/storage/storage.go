@@ -28,6 +28,7 @@ import (
 	retention2 "github.com/influxdata/influxdb/services/retention"
 	"github.com/openGemini/openGemini/engine/executor"
 	"github.com/openGemini/openGemini/engine/hybridqp"
+	"github.com/openGemini/openGemini/engine/index/clv"
 	"github.com/openGemini/openGemini/lib/config"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/logger"
@@ -39,7 +40,6 @@ import (
 	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/influx/meta"
-	meta2 "github.com/openGemini/openGemini/open_src/influx/meta"
 	"github.com/openGemini/openGemini/open_src/influx/meta/proto"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
 	"github.com/openGemini/openGemini/services/castor"
@@ -68,11 +68,12 @@ type StoreEngine interface {
 	TagValuesCardinality(string, []uint32, map[string][][]byte, influxql.Expr) (map[string]uint64, error)
 	SendSysCtrlOnNode(*netstorage.SysCtrlRequest) error
 	GetShardDownSampleLevel(db string, ptId uint32, shardID uint64) int
-	PreOffload(*meta2.DbPtInfo) error
-	RollbackPreOffload(*meta2.DbPtInfo) error
-	PreAssign(uint64, *meta2.DbPtInfo) error
-	Offload(*meta2.DbPtInfo) error
-	Assign(uint64, *meta2.DbPtInfo) error
+	PreOffload(*meta.DbPtInfo) error
+	RollbackPreOffload(*meta.DbPtInfo) error
+	PreAssign(uint64, *meta.DbPtInfo) error
+	Offload(*meta.DbPtInfo) error
+	Assign(uint64, *meta.DbPtInfo) error
+	GetConnId() uint64
 }
 
 type Storage struct {
@@ -177,20 +178,23 @@ func OpenStorage(path string, node *metaclient.Node, cli *metaclient.Client, con
 	opt.OpenShardLimit = conf.Data.OpenShardLimit
 	opt.DownSampleWriteDrop = conf.Data.DownSampleWriteDrop
 	opt.MaxDownSampleTaskConcurrency = conf.Data.MaxDownSampleTaskConcurrency
+	opt.MaxSeriesPerDatabase = conf.Data.MaxSeriesPerDatabase
 
+	// init clv config
+	clv.InitConfig(conf.ClvConfig)
 	// init chunkReader resource allocator.
 	if e := resourceallocator.InitResAllocator(int64(conf.Data.ChunkReaderThreshold), int64(conf.Data.MinChunkReaderConcurrency), int64(conf.Data.MinShardsConcurrency),
-		resourceallocator.GradientDesc, resourceallocator.ChunkReaderRes, 0); e != nil {
+		resourceallocator.GradientDesc, resourceallocator.ChunkReaderRes, 0, conf.Meta.PtNumPerNode); e != nil {
 		return nil, e
 	}
 	// init shards parallelism resource allocator.
 	if e := resourceallocator.InitResAllocator(int64(conf.Data.MaxShardsParallelismNum), 0, int64(conf.Data.MinShardsConcurrency),
-		0, resourceallocator.ShardsParallelismRes, time.Duration(conf.Data.MaxWaitResourceTime)); e != nil {
+		0, resourceallocator.ShardsParallelismRes, time.Duration(conf.Data.MaxWaitResourceTime), conf.Meta.PtNumPerNode); e != nil {
 		return nil, e
 	}
 	// init series parallelism resource allocator.
 	if e := resourceallocator.InitResAllocator(int64(conf.Data.MaxSeriesParallelismNum), 0, int64(conf.Data.MinShardsConcurrency),
-		0, resourceallocator.SeriesParallelismRes, time.Duration(conf.Data.MaxWaitResourceTime)); e != nil {
+		0, resourceallocator.SeriesParallelismRes, time.Duration(conf.Data.MaxWaitResourceTime), conf.Meta.PtNumPerNode); e != nil {
 		return nil, e
 	}
 
@@ -218,7 +222,7 @@ func OpenStorage(path string, node *metaclient.Node, cli *metaclient.Client, con
 	s.log = logger.NewLogger(errno.ModuleStorageEngine)
 
 	if !config.GetHaEnable() {
-		if err := s.engine.Open(s.metaClient.ShardDurations, s.metaClient); err != nil {
+		if err := s.engine.Open(s.metaClient.ShardDurations, s.metaClient.DBBriefInfos, s.metaClient); err != nil {
 			return nil, fmt.Errorf("err open engine %s", err)
 		}
 	}
@@ -260,7 +264,11 @@ func (s *Storage) WriteRows(db, rp string, ptId uint32, shardID uint64, rows []i
 		if config.GetHaEnable() {
 			return err
 		}
-		s.engine.CreateDBPT(db, ptId)
+		enableTagArray, err := s.metaClient.TagArrayEnabledFromServer(db)
+		if err != nil {
+			return err
+		}
+		s.engine.CreateDBPT(db, ptId, enableTagArray)
 		fallthrough
 	case errno.ShardNotFound:
 		// get index meta data, shard meta data
@@ -269,7 +277,12 @@ func (s *Storage) WriteRows(db, rp string, ptId uint32, shardID uint64, rows []i
 		if err != nil {
 			return err
 		}
-		err = s.engine.CreateShard(db, rp, ptId, shardID, timeRangeInfo)
+		// all rows belongs to the same shard/engine type, we can get engine type from the first one.
+		mstInfo, err := s.metaClient.GetMeasurementInfoStore(db, rp, influx.GetOriginMstName(rows[0].Name))
+		if err != nil {
+			return err
+		}
+		err = s.engine.CreateShard(db, rp, ptId, shardID, timeRangeInfo, mstInfo)
 		if err != nil {
 			return err
 		}
@@ -304,7 +317,6 @@ func (s *Storage) ReportLoad() {
 					rCtxes = append(rCtxes, rCtx)
 					s.log.Info("get load from dbPT", zap.String("load", rCtx.String()))
 				default:
-					break
 				}
 			}
 
@@ -370,6 +382,11 @@ func (s *Storage) CreateLogicPlanV2(ctx context.Context, db string, ptId uint32,
 	return plan, err
 }
 
+func (s *Storage) ScanWithSparseIndex(ctx context.Context, db string, ptId uint32, shardIDS []uint64, schema hybridqp.Catalog) (hybridqp.IShardsFragments, error) {
+	filesFragments, err := s.engine.ScanWithSparseIndex(ctx, db, ptId, shardIDS, schema.(*executor.QuerySchema))
+	return filesFragments, err
+}
+
 func (s *Storage) TagValues(db string, ptIDs []uint32, tagKeys map[string][][]byte, condition influxql.Expr) (netstorage.TablesTagSets, error) {
 
 	return s.engine.TagValues(db, ptIDs, tagKeys, condition)
@@ -404,24 +421,28 @@ func (s *Storage) GetEngine() netstorage.Engine {
 	return s.engine
 }
 
-func (s *Storage) PreOffload(ptInfo *meta2.DbPtInfo) error {
+func (s *Storage) PreOffload(ptInfo *meta.DbPtInfo) error {
 	return s.engine.PreOffload(ptInfo.Db, ptInfo.Pti.PtId)
 }
 
-func (s *Storage) RollbackPreOffload(ptInfo *meta2.DbPtInfo) error {
+func (s *Storage) RollbackPreOffload(ptInfo *meta.DbPtInfo) error {
 	return s.engine.RollbackPreOffload(ptInfo.Db, ptInfo.Pti.PtId)
 }
 
-func (s *Storage) PreAssign(opId uint64, ptInfo *meta2.DbPtInfo) error {
-	return s.engine.PreAssign(opId, ptInfo.Db, ptInfo.Pti.PtId, ptInfo.Shards, s.metaClient)
+func (s *Storage) PreAssign(opId uint64, ptInfo *meta.DbPtInfo) error {
+	return s.engine.PreAssign(opId, ptInfo.Db, ptInfo.Pti.PtId, ptInfo.Shards, ptInfo.DBBriefInfo, s.metaClient)
 }
 
-func (s *Storage) Offload(ptInfo *meta2.DbPtInfo) error {
+func (s *Storage) Offload(ptInfo *meta.DbPtInfo) error {
 	return s.engine.Offload(ptInfo.Db, ptInfo.Pti.PtId)
 }
 
-func (s *Storage) Assign(opId uint64, ptInfo *meta2.DbPtInfo) error {
-	return s.engine.Assign(opId, ptInfo.Db, ptInfo.Pti.PtId, ptInfo.Pti.Ver, ptInfo.Shards, s.metaClient)
+func (s *Storage) Assign(opId uint64, ptInfo *meta.DbPtInfo) error {
+	return s.engine.Assign(opId, ptInfo.Db, ptInfo.Pti.PtId, ptInfo.Pti.Ver, ptInfo.Shards, ptInfo.DBBriefInfo, s.metaClient)
+}
+
+func (s *Storage) GetConnId() uint64 {
+	return s.node.ConnId
 }
 
 func stringSlice2BytesSlice(s []string) [][]byte {

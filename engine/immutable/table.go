@@ -105,7 +105,6 @@ func getDataBlockBuffer(size int) []byte {
 	if v == nil {
 		return make([]byte, 0, size)
 	}
-
 	return v.([]byte)
 }
 

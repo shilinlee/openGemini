@@ -23,7 +23,7 @@ import (
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/lib/bufferpool"
 	"github.com/openGemini/openGemini/lib/errno"
-	"github.com/openGemini/openGemini/lib/record"
+	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/open_src/influx/query"
 	internal "github.com/openGemini/openGemini/open_src/influx/query/proto"
 	"google.golang.org/protobuf/proto"
@@ -35,7 +35,7 @@ func UnmarshalBinary(buf []byte, schema hybridqp.Catalog) (hybridqp.QueryNode, e
 		return nil, err
 	}
 
-	err, node := UnmarshalBinaryNode(pb, schema)
+	node, err := UnmarshalBinaryNode(pb, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -66,28 +66,27 @@ func unmarshalNodes(plansBuf [][]byte, schema hybridqp.Catalog) ([]hybridqp.Quer
 		return nil, nil
 	}
 
-	plans := make([]hybridqp.QueryNode, 0, len(plansBuf))
+	nodes := make([]hybridqp.QueryNode, 0, len(plansBuf))
 	for _, buf := range plansBuf {
 		pb := &internal.QueryNode{}
 		if err := proto.Unmarshal(buf, pb); err != nil {
 			return nil, err
 		}
 
-		err, node := UnmarshalBinaryNode(pb, schema)
+		node, err := UnmarshalBinaryNode(pb, schema)
 		if err != nil {
 			return nil, err
 		}
 
-		plans = append(plans, node)
+		nodes = append(nodes, node)
 	}
 
-	return plans, nil
+	return nodes, nil
 }
 
 func Marshal(plan LogicalPlaner, extMarshal func(pb *internal.QueryNode), nodes ...hybridqp.QueryNode) ([]byte, error) {
 	pb := &internal.QueryNode{
 		Name: plan.LogicPlanType(),
-		Rt:   nil,
 		Ops:  nil,
 	}
 
@@ -122,8 +121,8 @@ func MarshalQueryNode(node hybridqp.QueryNode) ([]byte, error) {
 		return nil, err
 	}
 
-	buf = bufferpool.Resize(buf, record.Uint64SizeBytes)
-	binary.BigEndian.PutUint64(buf[:record.Uint64SizeBytes], uint64(len(schema)))
+	buf = bufferpool.Resize(buf, util.Uint64SizeBytes)
+	binary.BigEndian.PutUint64(buf[:util.Uint64SizeBytes], uint64(len(schema)))
 	buf = append(buf, schema...)
 	buf = append(buf, nodeBuf...)
 	return buf, nil
@@ -241,6 +240,10 @@ func (p *LogicalOrderBy) LogicPlanType() internal.LogicPlanType {
 	return internal.LogicPlanType_LogicalOrderBy
 }
 
+func (p *LogicalSort) LogicPlanType() internal.LogicPlanType {
+	return internal.LogicPlanType_LogicalSort
+}
+
 func (p *LogicalHttpSenderHint) LogicPlanType() internal.LogicPlanType {
 	return internal.LogicPlanType_LogicalHttpSenderHint
 }
@@ -255,6 +258,18 @@ func (p *LogicalDummyShard) LogicPlanType() internal.LogicPlanType {
 
 func (p *LogicalTSSPScan) LogicPlanType() internal.LogicPlanType {
 	return internal.LogicPlanType_LogicalTSSPScan
+}
+
+func (p *LogicalHashMerge) LogicPlanType() internal.LogicPlanType {
+	return internal.LogicPlanType_LogicalHashMerge
+}
+
+func (p *LogicalSparseIndexScan) LogicPlanType() internal.LogicPlanType {
+	return internal.LogicPlanType_LogicalSparseIndexScan
+}
+
+func (p *LogicalColumnStoreReader) LogicPlanType() internal.LogicPlanType {
+	return internal.LogicPlanType_LogicalColumnStoreReader
 }
 
 func (p *LogicalLimit) String() string {
@@ -385,6 +400,21 @@ func (p *LogicalTSSPScan) String() string {
 	return "LogicalTSSPScan"
 }
 
+func (p *LogicalSort) String() string {
+	return "LogicalSort"
+}
+
+func (p *LogicalHashMerge) String() string {
+	return "LogicalHashMerge"
+}
+
+func (p *LogicalSparseIndexScan) String() string {
+	return "LogicalSparseIndexScan"
+}
+func (p *LogicalColumnStoreReader) String() string {
+	return "LogicalColumnStoreReader"
+}
+
 func MarshalBinary(q hybridqp.QueryNode) ([]byte, error) {
 	switch p := q.(type) {
 	case *HeuVertex:
@@ -437,18 +467,26 @@ func MarshalBinary(q hybridqp.QueryNode) ([]byte, error) {
 		return Marshal(p, nil, p.inputs...)
 	case *LogicalSlidingWindow:
 		return Marshal(p, nil, p.inputs...)
+	case *LogicalHashMerge:
+		return Marshal(p, func(pb *internal.QueryNode) {
+			pb.Exchange = uint32(p.eType) << 8
+		}, p.inputs...)
+	case *LogicalSparseIndexScan:
+		return Marshal(p, nil, p.inputs...)
+	case *LogicalColumnStoreReader:
+		return Marshal(p, nil, p.inputs...)
 	default:
 		panic(fmt.Sprintf("unsupoorted type %t", p))
 	}
 }
 
-func UnmarshalBinaryNode(pb *internal.QueryNode, schema hybridqp.Catalog) (error, hybridqp.QueryNode) {
+func UnmarshalBinaryNode(pb *internal.QueryNode, schema hybridqp.Catalog) (hybridqp.QueryNode, error) {
 	var nodes []hybridqp.QueryNode
 	var err error
 	if len(pb.Inputs) != 0 {
 		nodes, err = unmarshalNodes(pb.Inputs, schema)
 		if err != nil {
-			return err, nil
+			return nil, err
 		}
 	}
 
@@ -461,7 +499,7 @@ func UnmarshalBinaryNode(pb *internal.QueryNode, schema hybridqp.Catalog) (error
 			if eRole == PRODUCER_ROLE {
 				node.ToProducer()
 			}
-			return nil, node
+			return node, nil
 		}
 	case internal.LogicPlanType_LogicalLimit:
 		if len(nodes) == 1 {
@@ -471,68 +509,84 @@ func UnmarshalBinaryNode(pb *internal.QueryNode, schema hybridqp.Catalog) (error
 				LimitType: hybridqp.LimitType(pb.LimitType),
 			}
 			node := NewLogicalLimit(nodes[0], schema, limitPara)
-			return nil, node
+			return node, nil
 		}
 	case internal.LogicPlanType_LogicalIndexScan:
 		if len(nodes) == 1 {
-			return nil, NewLogicalIndexScan(nodes[0], schema)
+			return NewLogicalIndexScan(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalAggregate:
 		if len(nodes) == 1 {
 			switch pb.AggType {
 			case internal.AggType_Normal:
-				return nil, NewLogicalAggregate(nodes[0], schema)
+				return NewLogicalAggregate(nodes[0], schema), nil
 			case internal.AggType_CountDistinct:
-				return nil, NewCountDistinctAggregate(nodes[0], schema)
+				return NewCountDistinctAggregate(nodes[0], schema), nil
 			case internal.AggType_TagSet:
-				return nil, NewLogicalTagSetAggregate(nodes[0], schema)
+				return NewLogicalTagSetAggregate(nodes[0], schema), nil
 			}
 		}
 	case internal.LogicPlanType_LogicalMerge:
-		return nil, NewLogicalMerge(nodes, schema)
+		return NewLogicalMerge(nodes, schema), nil
 	case internal.LogicPlanType_LogicalSortMerge:
-		return nil, NewLogicalSortMerge(nodes, schema)
+		return NewLogicalSortMerge(nodes, schema), nil
 	case internal.LogicPlanType_LogicalFilter:
 		if len(nodes) == 1 {
-			return nil, NewLogicalFilter(nodes[0], schema)
+			return NewLogicalFilter(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalDedupe:
 		if len(nodes) == 1 {
-			return nil, NewLogicalDedupe(nodes[0], schema)
+			return NewLogicalDedupe(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalInterval:
 		if len(nodes) == 1 {
-			return nil, NewLogicalInterval(nodes[0], schema)
+			return NewLogicalInterval(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalSeries:
-		return nil, NewLogicalSeries(schema)
+		return NewLogicalSeries(schema), nil
 	case internal.LogicPlanType_LogicalReader:
 		if len(nodes) == 1 {
-			return nil, NewLogicalReader(nodes[0], schema)
+			return NewLogicalReader(nodes[0], schema), nil
 		} else if len(nodes) == 0 {
-			return nil, NewLogicalReader(nil, schema)
+			return NewLogicalReader(nil, schema), nil
 		}
 	case internal.LogicPlanType_LogicalTagSubset:
 		if len(nodes) == 1 {
-			return nil, NewLogicalTagSubset(nodes[0], schema)
+			return NewLogicalTagSubset(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalFill:
 		if len(nodes) == 1 {
-			return nil, NewLogicalFill(nodes[0], schema)
+			return NewLogicalFill(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalAlign:
 		if len(nodes) == 1 {
-			return nil, NewLogicalAlign(nodes[0], schema)
+			return NewLogicalAlign(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalMst:
 		// unused
 	case internal.LogicPlanType_LogicalProject:
 		if len(nodes) == 1 {
-			return nil, NewLogicalProject(nodes[0], schema)
+			return NewLogicalProject(nodes[0], schema), nil
 		}
 	case internal.LogicPlanType_LogicalSlidingWindow:
 		if len(nodes) == 1 {
-			return nil, NewLogicalSlidingWindow(nodes[0], schema)
+			return NewLogicalSlidingWindow(nodes[0], schema), nil
+		}
+	case internal.LogicPlanType_LogicalHashMerge:
+		if len(nodes) == 1 {
+			eType := ExchangeType(pb.Exchange >> 8 & 0xff)
+			node := NewLogicalHashMerge(nodes[0], schema, eType, []hybridqp.Trait{})
+			return node, nil
+		}
+	case internal.LogicPlanType_LogicalSparseIndexScan:
+		if len(nodes) == 1 {
+			return NewLogicalSparseIndexScan(nodes[0], schema), nil
+		}
+	case internal.LogicPlanType_LogicalColumnStoreReader:
+		if len(nodes) == 1 {
+			return NewLogicalColumnStoreReader(nodes[0], schema), nil
+		} else if len(nodes) == 0 {
+			return NewLogicalColumnStoreReader(nil, schema), nil
 		}
 	default:
 		panic(fmt.Sprintf("unsupoorted type %v", pb.Name))
@@ -541,12 +595,12 @@ func UnmarshalBinaryNode(pb *internal.QueryNode, schema hybridqp.Catalog) (error
 }
 
 func UnmarshalQueryNode(buf []byte) (hybridqp.QueryNode, error) {
-	if len(buf) < record.Uint64SizeBytes {
-		return nil, errno.NewError(errno.ShortBufferSize, record.Uint64SizeBytes, len(buf))
+	if len(buf) < util.Uint64SizeBytes {
+		return nil, errno.NewError(errno.ShortBufferSize, util.Uint64SizeBytes, len(buf))
 	}
 
-	schemaSize := binary.BigEndian.Uint64(buf[:record.Uint64SizeBytes])
-	buf = buf[record.Uint64SizeBytes:]
+	schemaSize := binary.BigEndian.Uint64(buf[:util.Uint64SizeBytes])
+	buf = buf[util.Uint64SizeBytes:]
 
 	if uint64(len(buf)) < schemaSize {
 		return nil, errno.NewError(errno.ShortBufferSize, schemaSize, len(buf))
@@ -562,6 +616,18 @@ func UnmarshalQueryNode(buf []byte) (hybridqp.QueryNode, error) {
 		return nil, err
 	}
 
+	planType := GetPlanType(schema, nil)
+	if planType != UNKNOWN {
+		templatePlan := StorePlanTemplate[planType].GetPlan()
+		if templatePlan != nil && !schema.Options().HaveOnlyCSStore() {
+			newPlan, err := NewPlanBySchemaAndSrcPlan(schema, templatePlan, nil)
+			if err != nil {
+				return nil, err
+			}
+			return newPlan, nil
+		}
+	}
+
 	node, err := UnmarshalBinary(buf[schemaSize:], schema)
 	if err != nil {
 		return nil, err
@@ -570,7 +636,6 @@ func UnmarshalQueryNode(buf []byte) (hybridqp.QueryNode, error) {
 	planner := BuildHeuristicPlannerForStore()
 	planner.SetRoot(node)
 	best := planner.FindBestExp()
-
 	return best, nil
 }
 

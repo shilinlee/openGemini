@@ -18,7 +18,10 @@ package engine
 
 import (
 	"fmt"
+	"sync/atomic"
+	"time"
 
+	"github.com/openGemini/openGemini/lib/memory"
 	"github.com/openGemini/openGemini/lib/metaclient"
 	"github.com/openGemini/openGemini/lib/netstorage"
 	"github.com/openGemini/openGemini/lib/syscontrol"
@@ -34,6 +37,7 @@ import (
  curl -i -XPOST 'http://127.0.0.1:8086/debug/ctrl?mod=snapshot&duration=30m'
  curl -i -XPOST 'http://127.0.0.1:8086/debug/ctrl?mod=downsample_in_order&order=true'
  curl -i -XPOST 'http://127.0.0.1:8086/debug/ctrl?mod=verifynode&switchon=false'
+ curl -i -XPOST 'http://127.0.0.1:8086/debug/ctrl?mod=memusagelimit&limit=85'
 */
 
 const (
@@ -45,20 +49,25 @@ const (
 	Failpoint         = "failpoint"
 	Readonly          = "readonly"
 	verifyNode        = "verifynode"
+	memUsageLimit     = "memusagelimit"
 )
 
-func getReqParam(req *netstorage.SysCtrlRequest) (error, int64, bool) {
+var (
+	memUsageLimitSize int32 = 100
+)
+
+func getReqParam(req *netstorage.SysCtrlRequest) (int64, bool, error) {
 	en, err := syscontrol.GetBoolValue(req.Param(), "switchon")
 	if err != nil {
 		log.Error("get switch from param fail", zap.Error(err))
-		return err, 0, false
+		return 0, false, err
 	}
 	shardId, err := syscontrol.GetIntValue(req.Param(), "shid")
 	if err != nil {
 		log.Error("get shard id  from param fail", zap.Error(err))
-		return err, 0, false
+		return 0, false, err
 	}
-	return nil, shardId, en
+	return shardId, en, nil
 }
 
 func (e *Engine) processReq(req *netstorage.SysCtrlRequest) error {
@@ -79,7 +88,7 @@ func (e *Engine) processReq(req *netstorage.SysCtrlRequest) error {
 			return nil
 		}
 
-		err, shardId, en := getReqParam(req)
+		shardId, en, err := getReqParam(req)
 		if err != nil {
 			return err
 		}
@@ -100,7 +109,7 @@ func (e *Engine) processReq(req *netstorage.SysCtrlRequest) error {
 			return nil
 		}
 
-		err, shardId, en := getReqParam(req)
+		shardId, en, err := getReqParam(req)
 		if err != nil {
 			return err
 		}
@@ -142,6 +151,13 @@ func (e *Engine) processReq(req *netstorage.SysCtrlRequest) error {
 		}
 		metaclient.VerifyNodeEn = en
 		log.Info("set verify switch ok", zap.String("switchon", req.Param()["switchon"]))
+		return nil
+	case memUsageLimit:
+		limit, err := syscontrol.GetIntValue(req.Param(), "limit")
+		if err != nil {
+			return err
+		}
+		setMemUsageLimit(int32(limit))
 		return nil
 	default:
 		return fmt.Errorf("unknown sys cmd %v", req.Mod())
@@ -192,4 +208,27 @@ func (e *Engine) handleReadonly(req *netstorage.SysCtrlRequest) error {
 	e.mu.Unlock()
 	log.Info("readonly status switch ok", zap.String("switchon", req.Param()["switchon"]))
 	return nil
+}
+
+func setMemUsageLimit(limit int32) {
+	atomic.StoreInt32(&memUsageLimitSize, limit)
+	fmt.Println(time.Now().Format(time.RFC3339Nano), "memUsageLimit:", limit)
+}
+
+func GetMemUsageLimit() int32 {
+	return atomic.LoadInt32(&memUsageLimitSize)
+}
+
+func IsMemUsageExceeded() bool {
+	memLimit := GetMemUsageLimit()
+	if memLimit < 1 || memLimit >= 100 {
+		return false
+	}
+	total, available := memory.SysMem()
+	memUsed := total - available
+	memUsedLimit := (total * int64(memLimit)) / 100
+	exceeded := memUsed > memUsedLimit
+	log.Info("system mem usage", zap.Int64("total", total), zap.Int64("available", available), zap.Int64("memUsed", memUsed),
+		zap.Float64("memLimit", float64(memLimit)/100), zap.Int64("memUsedLimit", memUsedLimit), zap.Bool("exceeded", exceeded))
+	return exceeded
 }

@@ -42,8 +42,10 @@ var (
 
 const TsMonitor = "ts-monitor"
 
-var monitorUsage = fmt.Sprintf(app.MainUsage, TsMonitor, TsMonitor)
-var runUsage = fmt.Sprintf(app.RunUsage, TsMonitor, TsMonitor)
+var (
+	monitorUsage = fmt.Sprintf(app.MainUsage, TsMonitor, TsMonitor)
+	runUsage     = fmt.Sprintf(app.RunUsage, TsMonitor, TsMonitor)
+)
 
 func main() {
 	app.InitParse()
@@ -108,7 +110,7 @@ func doRun(args ...string) error {
 		util.MustClose(mainCmd)
 		mainCmd.Logger.Info("Monitor shutdown successfully!")
 	case "version":
-		fmt.Printf(app.VERSION, TsMonitor, TsVersion, TsCommit, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf(app.VERSION, TsMonitor, TsVersion, TsBranch, TsCommit, runtime.GOOS, runtime.GOARCH)
 	default:
 		return fmt.Errorf(monitorUsage)
 	}

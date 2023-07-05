@@ -23,7 +23,7 @@ import (
 
 type ResourceType int64
 
-var ResTypeNotFound = errors.New("resource type not found")
+var ErrResTypeNotFound = errors.New("resource type not found")
 
 const (
 	ChunkReaderRes ResourceType = iota
@@ -40,7 +40,7 @@ func init() {
 	resourceArr = make([]ResourceManager, Bottom)
 }
 
-func InitResAllocator(threshold, minAllocNum, minShardsAllocNum, funcType int64, resType ResourceType, maxWaitTime time.Duration) error {
+func InitResAllocator(threshold, minAllocNum, minShardsAllocNum, funcType int64, resType ResourceType, maxWaitTime time.Duration, ptNumPerNode uint32) error {
 	switch resType {
 	case ChunkReaderRes:
 		chunkReaderResAllocator, e := NewChunkReaderResAllocator(threshold, minAllocNum, funcType)
@@ -49,7 +49,7 @@ func InitResAllocator(threshold, minAllocNum, minShardsAllocNum, funcType int64,
 		}
 		resourceArr[ChunkReaderRes] = chunkReaderResAllocator
 	case ShardsParallelismRes:
-		shardsAllocator, e := NewShardsParallelismAllocator(maxWaitTime, threshold, minShardsAllocNum)
+		shardsAllocator, e := NewShardsParallelismAllocator(maxWaitTime, threshold, minShardsAllocNum, ptNumPerNode)
 		if e != nil {
 			return e
 		}
@@ -57,22 +57,39 @@ func InitResAllocator(threshold, minAllocNum, minShardsAllocNum, funcType int64,
 	case SeriesParallelismRes:
 		resourceArr[SeriesParallelismRes] = NewSeriesParallelismAllocator(maxWaitTime, threshold)
 	default:
-		return ResTypeNotFound
+		return ErrResTypeNotFound
 	}
 	return nil
 }
 
 func AllocRes(resourceType ResourceType, num int64) (int64, int64, error) {
 	if resourceType >= Bottom {
-		return 0, 0, ResTypeNotFound
+		return 0, 0, ErrResTypeNotFound
 	}
 	r := resourceArr[resourceType]
 	return r.Alloc(num)
 }
 
+func AllocParallelismRes(resourceType ResourceType, num int64) (int64, error) {
+	if resourceType >= Bottom {
+		return 0, ErrResTypeNotFound
+	}
+	r := resourceArr[resourceType]
+	return r.AllocParallelism(num)
+}
+
+func FreeParallelismRes(resourceType ResourceType, num, totalNum int64) error {
+	if resourceType >= Bottom {
+		return ErrResTypeNotFound
+	}
+	r := resourceArr[resourceType]
+	r.FreeParallelism(num, totalNum)
+	return nil
+}
+
 func FreeRes(resourceType ResourceType, num, totalNum int64) error {
 	if resourceType >= Bottom {
-		return ResTypeNotFound
+		return ErrResTypeNotFound
 	}
 	r := resourceArr[resourceType]
 	r.Free(num, totalNum)

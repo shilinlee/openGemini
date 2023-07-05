@@ -20,6 +20,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +38,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hpcloud/tail"
+	"github.com/nxadm/tail"
+	"github.com/openGemini/openGemini/lib/config"
+	"github.com/openGemini/openGemini/lib/crypto"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/fileops"
 	"github.com/openGemini/openGemini/lib/logger"
@@ -86,7 +90,9 @@ type ReportJob struct {
 	storeRP       string
 	storeDuration time.Duration
 	writeUrl      string
+	writeHeader   http.Header
 	queryUrl      string
+	queryHeader   http.Header
 	gzipped       bool
 
 	Client HTTPClient
@@ -102,14 +108,39 @@ type ReportJob struct {
 	reportStat *ReportStat
 }
 
-func NewReportJob(addr, database, storeRP string, rpDuration time.Duration, gzipped, compress bool, logger *logger.Logger, errLogHistory string) *ReportJob {
+func NewReportJob(logger *logger.Logger, c *config.TSMonitor, gzipped bool, errLogHistory string) *ReportJob {
+	r := &c.ReportConfig
+	q := &c.QueryConfig
+	m := &c.MonitorConfig
+	protocol := "http"
+	var defaultClient = http.DefaultClient
+	if c.ReportConfig.HTTPSEnabled {
+		protocol = "https"
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		defaultClient = &http.Client{
+			Transport: tr,
+		}
+	}
+
+	writeUrl := fmt.Sprintf("%s://%s/write?db=%s&rp=%s", protocol, r.Address, r.Database, r.Rp)
+	writeHeader := http.Header{}
+	writeHeader.Set("Authorization", "Basic "+basicAuth(r.Username, crypto.Decrypt(r.Password)))
+
+	queryUrl := fmt.Sprintf("%s://%s/query", protocol, r.Address)
+	queryHeader := http.Header{}
+	queryHeader.Set("Authorization", "Basic "+basicAuth(q.Username, crypto.Decrypt(q.Password)))
+
 	mr := &ReportJob{
-		storeDatabase: database,
-		storeRP:       storeRP,
-		storeDuration: rpDuration,
-		writeUrl:      fmt.Sprintf("http://%s/write?db=%s&rp=%s", addr, database, storeRP),
-		queryUrl:      fmt.Sprintf("http://%s/query", addr),
-		compress:      compress,
+		storeDatabase: r.Database,
+		storeRP:       r.Rp,
+		storeDuration: time.Duration(r.RpDuration),
+		writeUrl:      writeUrl,
+		writeHeader:   writeHeader,
+		queryUrl:      queryUrl,
+		queryHeader:   queryHeader,
+		compress:      m.Compress,
 		gzipped:       gzipped,
 		done:          make(chan struct{}),
 		logger:        logger,
@@ -117,7 +148,7 @@ func NewReportJob(addr, database, storeRP string, rpDuration time.Duration, gzip
 		errLogStat:    make(map[string]string),
 		reportStat:    NewReportStat(),
 	}
-	mr.Client = http.DefaultClient
+	mr.Client = defaultClient
 	return mr
 }
 
@@ -126,7 +157,7 @@ func (rb *ReportJob) CreateDatabase() error {
 	cmd := fmt.Sprintf("CREATE DATABASE %s with duration %s replication 1 name %s", rb.storeDatabase, rb.storeDuration, rb.storeRP)
 	data.Set("q", cmd)
 	buf := data.Encode()
-	headers := http.Header{}
+	headers := rb.queryHeader
 	headers.Add("Content-Type", "application/x-www-form-urlencoded")
 	if err := rb.retryEver(rb.queryUrl, headers, buf, HttpTimeout); err != nil {
 		return err
@@ -134,8 +165,13 @@ func (rb *ReportJob) CreateDatabase() error {
 	return nil
 }
 
+func basicAuth(username, password string) string {
+	auth := username + ":" + password
+	return base64.StdEncoding.EncodeToString([]byte(auth))
+}
+
 func (rb *ReportJob) WriteData(buf string) error {
-	return rb.retryEver(rb.writeUrl, nil, buf, 0)
+	return rb.retryEver(rb.writeUrl, rb.writeHeader, buf, 0)
 }
 
 func checkConnectionError(err error) bool {
@@ -267,7 +303,7 @@ func (rb *ReportJob) postData(buf *bytes.Buffer, batch *int, minSize int) error 
 	if err := rb.CreateDatabase(); err != nil {
 		return err
 	}
-	if err := rb.retryEver(rb.writeUrl, nil, buf.String(), 0); err != nil {
+	if err := rb.WriteData(buf.String()); err != nil {
 		return err
 	}
 
@@ -371,7 +407,7 @@ func (rb *ReportJob) reportHistoryErrLog(filename string) error {
 	}
 
 	if len(errnoMap) > 0 {
-		if err = rb.retryEver(rb.writeUrl, nil, buf.String(), 0); err != nil {
+		if err = rb.WriteData(buf.String()); err != nil {
 			return err
 		}
 		buf.Reset()
@@ -431,7 +467,7 @@ func (rb *ReportJob) reportCurrentErrLog(filename, errLogPath string) error {
 					buf.WriteString(data)
 					buf.WriteByte('\n')
 				}
-				if err = rb.retryEver(rb.writeUrl, nil, buf.String(), 0); err != nil {
+				if err = rb.WriteData(buf.String()); err != nil {
 					return err
 				}
 				buf.Reset()

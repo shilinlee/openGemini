@@ -100,7 +100,7 @@ func TestMonitor(t *testing.T) {
 }
 
 func TestTSMeta(t *testing.T) {
-	conf := config.NewTSMeta()
+	conf := config.NewTSMeta(false)
 
 	// Data conf
 	conf.Data.IngesterAddress = "127.0.0.1:8800"
@@ -147,7 +147,7 @@ func TestTSSql(t *testing.T) {
 }
 
 func TestTSStore(t *testing.T) {
-	conf := config.NewTSStore()
+	conf := config.NewTSStore(true)
 	conf.Data.IngesterAddress = "127.0.0.1:8800"
 	conf.Data.SelectAddress = "127.0.0.1:8801"
 	conf.Data.DataDir = "/opt/gemini"
@@ -155,7 +155,7 @@ func TestTSStore(t *testing.T) {
 	conf.Spdy.ConnPoolSize = 10
 	conf.Common.CPUNum = 10
 
-	assert.EqualError(t, conf.Validate(), "data store-wal-dir must not be empty")
+	assert.NoError(t, conf.Validate())
 	conf.Data.WALDir = "/opt/gemini/wal"
 
 	conf.Data.MaxConcurrentCompactions = -1
@@ -186,7 +186,7 @@ func TestTSStore(t *testing.T) {
 }
 
 func TestGossip_BuildSerf(t *testing.T) {
-	conf := config.NewGossip()
+	conf := config.NewGossip(true)
 	conf.LogEnabled = true
 	conf.StoreBindPort = 8811
 	conf.BindAddr = "127.0.0.1"

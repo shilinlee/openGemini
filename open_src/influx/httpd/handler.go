@@ -3,6 +3,7 @@ package httpd
 import (
 	"bytes"
 	"context"
+	json2 "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bmizerany/pat"
 	"github.com/golang-jwt/jwt"
 	"github.com/golang/snappy"
 	"github.com/influxdata/influxdb"
@@ -37,7 +39,6 @@ import (
 	"github.com/openGemini/openGemini/lib/statisticsPusher/statistics"
 	"github.com/openGemini/openGemini/lib/syscontrol"
 	"github.com/openGemini/openGemini/lib/util"
-	"github.com/openGemini/openGemini/open_src/github.com/bmizerany/pat"
 	"github.com/openGemini/openGemini/open_src/influx/auth"
 	"github.com/openGemini/openGemini/open_src/influx/httpd/config"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
@@ -122,6 +123,7 @@ type Handler struct {
 		AdminUserExists() bool
 		DataNodes() ([]meta2.DataNode, error)
 		ShowShards() models.Rows
+		TagArrayEnabled(db string) bool
 	}
 
 	QueryAuthorizer interface {
@@ -351,9 +353,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer atomic.AddInt64(&statistics.HandlerStat.ActiveRequests, -1)
 	start := time.Now()
 
-	// Add version and build header to all InfluxDB requests.
-	w.Header().Add("X-Influxdb-Version", h.Version)
-	w.Header().Add("X-Influxdb-Build", h.BuildType)
+	// changed 2023-06-30, use GeminiDB replace influxdb
+	// Add version and build header to all Geminidb requests.
+	w.Header().Add("X-Geminidb-Version", h.Version)
+	w.Header().Add("X-Geminidb-Build", h.BuildType)
 
 	if strings.HasPrefix(r.URL.Path, "/debug/pprof") && h.Config.PprofEnabled {
 		h.handleProfiles(w, r)
@@ -472,8 +475,9 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 			if d.Nanoseconds() > time.Second.Nanoseconds()*10 {
 				qDuration.AddDuration("TotalDuration", d.Nanoseconds())
 				statistics.AppendSqlQueryDuration(qDuration)
+				h.Logger.Info("slow query", zap.Duration("duration", d), zap.String("db", qDuration.DB),
+					zap.String("query", qDuration.Query))
 			}
-			h.Logger.Info("sql query duration", zap.Duration("duration", d))
 		}()
 	}
 
@@ -495,7 +499,7 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 
 		// Convert json.Number into int64 and float64 values
 		for k, v := range params {
-			if v, ok := v.(jsoniter.Number); ok {
+			if v, ok := v.(json2.Number); ok {
 				var err error
 				if strings.Contains(string(v), ".") {
 					params[k], err = v.Float64()
@@ -944,6 +948,7 @@ func (h *Handler) serveWrite(w http.ResponseWriter, r *http.Request, user meta2.
 		uw.TsMultiplier = tsMultiplier
 		uw.Db = database
 		uw.ReqBuf, ctx.ReqBuf = ctx.ReqBuf, uw.ReqBuf
+		uw.EnableTagArray = h.MetaClient.TagArrayEnabled(database)
 		atomic.AddInt64(&statistics.HandlerStat.WriteRequestBytesReceived, int64(len(uw.ReqBuf)))
 
 		ctx.Wg.Add(1)
@@ -1286,10 +1291,12 @@ func (h *Handler) servePromRead(w http.ResponseWriter, r *http.Request, user met
 		qDuration = statistics.NewSqlSlowQueryStatistics()
 		qDuration.SetDatabase(db)
 		defer func() {
-			d := time.Now().Sub(startTime).Nanoseconds()
-			if d > time.Second.Nanoseconds()*10 {
-				qDuration.AddDuration("TotalDuration", d)
+			d := time.Now().Sub(startTime)
+			if d.Nanoseconds() > time.Second.Nanoseconds()*10 {
+				qDuration.AddDuration("TotalDuration", d.Nanoseconds())
 				statistics.AppendSqlQueryDuration(qDuration)
+				h.Logger.Info("slow query", zap.Duration("duration", d), zap.String("db", qDuration.DB),
+					zap.String("query", qDuration.Query))
 			}
 		}()
 	}

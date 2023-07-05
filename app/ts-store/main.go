@@ -66,7 +66,7 @@ func doRun(args ...string) error {
 			return err
 		}
 		mainCmd := app.NewCommand()
-		err = mainCmd.InitConfig(config.NewTSStore(), options.ConfigPath)
+		err = mainCmd.InitConfig(config.NewTSStore(true), options.ConfigPath)
 		if err != nil {
 			return err
 		}
@@ -109,7 +109,7 @@ func doRun(args ...string) error {
 		util.MustClose(mainCmd)
 		mainCmd.Logger.Info("Store shutdown successfully!")
 	case "version":
-		fmt.Printf(app.VERSION, TsStore, TsVersion, TsCommit, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf(app.VERSION, TsStore, TsVersion, TsBranch, TsCommit, runtime.GOOS, runtime.GOARCH)
 	default:
 		return fmt.Errorf(storeUsage)
 	}
