@@ -131,6 +131,7 @@ func NewReportJob(logger *logger.Logger, c *config.TSMonitor, gzipped bool, errL
 	queryUrl := fmt.Sprintf("%s://%s/query", protocol, r.Address)
 	queryHeader := http.Header{}
 	queryHeader.Set("Authorization", "Basic "+basicAuth(q.Username, crypto.Decrypt(q.Password)))
+	queryHeader.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	mr := &ReportJob{
 		storeDatabase: r.Database,
@@ -157,9 +158,7 @@ func (rb *ReportJob) CreateDatabase() error {
 	cmd := fmt.Sprintf("CREATE DATABASE %s with duration %s replication 1 name %s", rb.storeDatabase, rb.storeDuration, rb.storeRP)
 	data.Set("q", cmd)
 	buf := data.Encode()
-	headers := rb.queryHeader
-	headers.Add("Content-Type", "application/x-www-form-urlencoded")
-	if err := rb.retryEver(rb.queryUrl, headers, buf, HttpTimeout); err != nil {
+	if err := rb.retryEver(rb.queryUrl, rb.queryHeader, buf, HttpTimeout); err != nil {
 		return err
 	}
 	return nil
