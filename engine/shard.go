@@ -106,13 +106,9 @@ func (storage *tsstoreImpl) WriteIndex(s *shard, rows *influx.Rows, mw *mstWrite
 	return err
 }
 
-func (storage *tsstoreImpl) SetClient(client metaclient.MetaClient) {
-	return
-}
+func (storage *tsstoreImpl) SetClient(client metaclient.MetaClient) {}
 
-func (storage *tsstoreImpl) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {
-	return
-}
+func (storage *tsstoreImpl) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {}
 
 type columnstoreImpl struct {
 	mu       sync.RWMutex
@@ -405,7 +401,6 @@ func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdent
 		writeColdDuration:  options.WriteColdDuration,
 		forceChan:          make(chan struct{}, 1),
 		defaultTags: map[string]string{
-			"path":            dataPath,
 			"id":              fmt.Sprintf("%d", ident.ShardID),
 			"database":        db,
 			"retentionPolicy": rp,
@@ -447,7 +442,7 @@ func NewShard(dataPath, walPath string, lockPath *string, ident *meta.ShardIdent
 }
 
 func (s *shard) initSeriesLimiter(limit uint64) {
-	if limit == 0 {
+	if limit == 0 || s.indexBuilder == nil {
 		return
 	}
 
@@ -638,6 +633,7 @@ func (mw *mstWriteCtx) putRowsPool(rp []influx.Row) {
 		rp[i].Reset()
 	}
 	rp = rp[:0]
+	//lint:ignore SA6002 argument should be pointer-like to avoid allocations
 	mw.rowsPool.Put(rp)
 }
 
@@ -1138,7 +1134,12 @@ func (s *shard) syncReplayWal(ctx context.Context) error {
 
 	walFileNames, err := s.wal.Replay(ctx,
 		func(binary []byte) error {
-			return s.writeWalBuffer(binary)
+			err := s.writeWalBuffer(binary)
+			// SeriesLimited error is ignored in the wal playback process
+			if errno.Equal(err, errno.SeriesLimited) {
+				err = nil
+			}
+			return err
 		},
 	)
 	if err != nil {
@@ -1757,15 +1758,14 @@ func (s *shard) StartDownSampleTask(taskID int, mstName string, files *immutable
 	port.ConnectStateReserve(writeIntoStorage.GetOutputs()[0])
 	writeIntoStorage.(*WriteIntoStorageTransform).SetTaskId(taskID)
 	ctx := context.Background()
-	go sidSequenceReader.Work(ctx)
-	go fileSequenceAgg.Work(ctx)
-	go writeIntoStorage.Work(ctx)
+	go func() { _ = sidSequenceReader.Work(ctx) }()
+	go func() { _ = fileSequenceAgg.Work(ctx) }()
+	go func() { _ = writeIntoStorage.Work(ctx) }()
 	return nil
 }
 
 func (s *shard) SetMstInfo(name string, mstInfo *meta.MeasurementInfo) {
 	s.storage.SetMstInfo(name, mstInfo)
-	return
 }
 
 func (s *shard) GetID() uint64 {
@@ -1928,7 +1928,7 @@ func (s *shard) checkMstDeleting(mst string) bool {
 
 func (s *shard) ScanWithSparseIndex(ctx context.Context, schema *executor.QuerySchema, callBack func(num int64) error) (*executor.FileFragments, error) {
 	if len(schema.Options().GetSourcesNames()) != 1 {
-		return nil, fmt.Errorf("Currently, Only a single table is supported.")
+		return nil, fmt.Errorf("currently, Only a single table is supported")
 	}
 
 	// get the source measurement.
@@ -1962,7 +1962,7 @@ func (s *shard) scanWithPrimaryIndex(dataFiles []immutable.TSSPFile, schema *exe
 	var skipFileIdx []int
 	var keyCondition sparseindex.KeyCondition
 	binaryfilterfunc.RewriteTimeCompareVal(schema.Options().GetSourceCondition())
-	tr := util.TimeRange{schema.Options().GetStartTime(), schema.Options().GetEndTime()}
+	tr := util.TimeRange{Min: schema.Options().GetStartTime(), Max: schema.Options().GetEndTime()}
 	filesFragments := executor.NewFileFragments()
 	for i, dataFile := range dataFiles {
 		if dataFile == nil {

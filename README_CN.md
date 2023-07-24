@@ -1,11 +1,12 @@
 # README
 
-![License](https://img.shields.io/badge/license-Apache2.0-green)                                                                                                                                     
+![color](https://user-images.githubusercontent.com/49023462/231386185-a18cd5dd-30ef-4d03-b86b-3119b16843a0.png)
 
-[简体中文]() | [English](README.md)
+![License](https://img.shields.io/badge/license-Apache2.0-green) ![Language](https://img.shields.io/badge/Language-Go-blue.svg)  ![codeCov](https://img.shields.io/codecov/c/gh/openGemini/openGemini)  ![release](https://img.shields.io/github/v/release/openGemini/openGemini)   
 
-[官网](http://www.openGemini.org) | [文档](http://www.openGemini.org/docs) | [贡献指南](http://www.openGemini.org/contribution) 
+简体中文 | [English](README.md)
 
+[官网](http://www.openGemini.org) | [文档](http://www.openGemini.org/docs) | [贡献指南](CONTRIBUTION_CN.md) | [RoadMap](ROADMAP.md)
 
 ## 关于openGemini
 
@@ -39,17 +40,15 @@ openGemini是华为云开源的一款云原生分布式时序数据库，可广�
 
 openGemini目前暂时只支持Linux操作系统，无缝支持InfluxDB生态工具链，比如：
 
-主流开发语言驱动：[JavaScript](https://github.com/node-influx/node-influx)、[Java](https://github.com/influxdata/influxdb-java)、[C/C++](C/C++)、[Ruby](https://github.com/influxdata/influxdb-ruby)、[Go](https://github.com/influxdata/influxdb1-client)、[Python](https://github.com/influxdata/influxdb-python)、[PHP](https://github.com/influxdata/influxdb-php)
+主流开发语言驱动：[JavaScript](https://github.com/node-influx/node-influx)、[Java](https://github.com/influxdata/influxdb-java)、[C/C++]()、[Ruby](https://github.com/influxdata/influxdb-ruby)、[Go](https://github.com/influxdata/influxdb1-client)、[Python](https://github.com/influxdata/influxdb-python)、[PHP](https://github.com/influxdata/influxdb-php)
 
-客户端：Influx
+客户端：ts-cli
 
 数据接入工具：StatsD、EMQX、Telegraf、Icinga2、HiveMQ、Kafka、MQTT
 
 数据洞察工具：Chronograf、Grafana
 
 大数据和数据分析系统：Zeppelin、Flink、Spark、Kapacitor等。
-
-
 
 ## 快速开始
 
@@ -67,7 +66,7 @@ openGemini提供了基于AI的时序数据异常检测库，详细可见[openGem
 
 ### 编译环境信息
 
-[GO](https://golang.org/dl/) version v1.16+
+[GO](https://golang.org/dl/) version v1.18+
 
 [Python](https://www.python.org/downloads/) version v3.7+
 
@@ -87,30 +86,30 @@ export GOSUMDB=off
 
 1. 从 GitHub 克隆源代码
 
-```
-> cd $GOPATH
-> mkdir -p {pkg,bin,src}
-> cd src
-> git clone https://github.com/openGemini/openGemini.git
+```bash
+cd $GOPATH
+mkdir -p {pkg,bin,src}
+cd src
+git clone https://github.com/openGemini/openGemini.git
 ```
 
 2. 进入主目录
 
-```
+```bash
 > cd openGemini
 ```
 
 3. 编译
 
-```
+```bash
 > export CGO_LDFLAGS="-Wl,-z,now -Wl,-z,relro -Wl,-z,noexecstack -fPIE -ftrapv"
 > export CGO_CFLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2 -O2"
-> python build.py
+> python build.py -clean
 ```
 
 编译好的二进制在build目录中
 
-```
+```bash
 > ls build
 ts-cli  ts-meta  ts-monitor  ts-server  ts-sql  ts-store  
 ```
@@ -174,7 +173,7 @@ openGemini支持三种方式创建measurement数据表
 数据Schemaless写入(样例)
 
 ```
-> insert sensor,farmID=f1,deviceID=d0 sensorID=s20,value=50.98
+> insert sensor,farmID=f1,deviceID=d0 sensorID="s20",value=50.98
 ```
 
 数据查询(样例)
@@ -193,7 +192,7 @@ Elapsed: 7.723332ms
 
 ## 加入贡献
 
-[贡献指南](./CONTRIBUTION_CN.md)
+[贡献指南](CONTRIBUTION_CN.md)
 
 ## 联系我们
 
@@ -203,13 +202,17 @@ Elapsed: 7.723332ms
 
 2. 扫描下方二维码关注openGemini公众号
 
-![img](images/qrt.png)
+  ![img](images/qrt.png)
 
-3. 社区邮箱：community.ts@opengemini.org
+3. 社区邮箱   
 
-4. [Slack](https://join.slack.com/t/huawei-ipz9493/shared_invite/zt-1bvxs3s0i-h0BzP7ibpWfqmpJO2a4iKw)
+   community.ts@opengemini.org
 
-5. [Twitter](https://twitter.com/openGemini)
+4. [邮件列表(mailing list)](https://groups.google.com/g/openGemini)
+
+5. [Slack](https://join.slack.com/t/huawei-ipz9493/shared_invite/zt-1bvxs3s0i-h0BzP7ibpWfqmpJO2a4iKw)
+
+6. [Twitter](https://twitter.com/openGemini)
 
 ## License
 

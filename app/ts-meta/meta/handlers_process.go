@@ -61,6 +61,7 @@ func (h *CreateNode) Process() (transport.Codec, error) {
 	tcpAddr := h.req.QueryHost
 	b, err := h.store.createDataNode(httpAddr, tcpAddr)
 	if err != nil {
+		h.logger.Error("createNode fail", zap.Error(err))
 		rsp.Err = err.Error()
 		return rsp, nil
 	}
@@ -408,5 +409,16 @@ func (h *GetDBBriefInfo) Process() (transport.Codec, error) {
 		rsp.Err = err.Error()
 	}
 	rsp.Data = b
+	return rsp, nil
+}
+
+func (h *RegisterQueryIDOffset) Process() (transport.Codec, error) {
+	rsp := &message.RegisterQueryIDOffsetResponse{}
+	offset, err := h.store.registerQueryIDOffset(meta.SQLHost(h.req.Host))
+	if err != nil {
+		rsp.Err = err.Error()
+		return rsp, nil
+	}
+	rsp.Offset = offset
 	return rsp, nil
 }

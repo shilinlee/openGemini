@@ -333,7 +333,7 @@ func (c *GetMeasurementsInfoCallback) Handle(data interface{}) error {
 	}
 	msg, ok := metaMsg.Data().(*message.GetMeasurementsInfoResponse)
 	if !ok {
-		return errors.New(fmt.Sprintf("data is not a GetMeasurementsInfoResponse, type %T", metaMsg.Data()))
+		return fmt.Errorf("data is not a GetMeasurementsInfoResponse, type %T", metaMsg.Data())
 	}
 	if msg.Err != "" {
 		return errors.New(msg.Err)
@@ -354,11 +354,32 @@ func (c *GetDBBriefInfoCallback) Handle(data interface{}) error {
 	}
 	msg, ok := metaMsg.Data().(*message.GetDBBriefInfoResponse)
 	if !ok {
-		return errors.New(fmt.Sprintf("data is not a GetDBBriefInfoResponse, type %T", metaMsg.Data()))
+		return fmt.Errorf("data is not a GetDBBriefInfoResponse, type %T", metaMsg.Data())
 	}
 	if msg.Err != "" {
 		return errors.New(msg.Err)
 	}
 	c.Data = msg.Data
+	return nil
+}
+
+type RegisterQueryIDOffsetCallback struct {
+	BaseCallback
+	Offset uint64
+}
+
+func (c *RegisterQueryIDOffsetCallback) Handle(data interface{}) error {
+	metaMsg, err := c.Trans2MetaMsg(data)
+	if err != nil {
+		return err
+	}
+	msg, ok := metaMsg.Data().(*message.RegisterQueryIDOffsetResponse)
+	if !ok {
+		return errors.New("data is not a RegisterQueryIDOffsetResponse")
+	}
+	if msg.Err != "" {
+		return errors.New(msg.Err)
+	}
+	c.Offset = msg.Offset
 	return nil
 }

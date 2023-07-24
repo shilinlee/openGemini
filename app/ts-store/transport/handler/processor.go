@@ -86,8 +86,8 @@ func (p *DDLProcessor) Handle(w spdy.Responser, data interface{}) error {
 		return err
 	}
 
-	rspTyp := netstorage.GetResponseMessageType(msg.Typ)
-	if rspTyp == netstorage.UnknownMessage {
+	rspTyp, ok := netstorage.MessageResponseTyp[msg.Typ]
+	if !ok {
 		return fmt.Errorf("no response message type: %d", msg.Typ)
 	}
 
@@ -142,19 +142,28 @@ func (p *SelectProcessor) Handle(w spdy.Responser, data interface{}) error {
 
 	qm := query.NewManager(msg.ClientID())
 
-	if qm.Aborted(w.Sequence()) {
+	// case for：
+	// this query is retried by SQL when store closed and DBPT move to this node.
+	if qm.IsKilled(req.Opt.QueryId) {
+		err := errno.NewError(errno.ErrQueryKilled, req.Opt.QueryId)
+		logger.GetLogger().Error("query already killed", zap.Uint64("qid", req.Opt.QueryId), zap.Error(err))
+		_ = w.Response(executor.NewErrorMessage(errno.ErrQueryKilled, err.Error()), true)
+		return nil
+	}
+
+	if qm.Aborted(req.Opt.QueryId) {
 		logger.GetLogger().Info("[SelectProcessor.Handle] aborted")
 		_ = w.Response(executor.NewFinishMessage(), true)
 		return nil
 	}
 
 	s := NewSelect(p.store, w, req)
-	qm.Add(w.Sequence(), s)
+	qm.Add(req.Opt.QueryId, s)
 
 	w.Session().EnableDataACK()
 	defer func() {
 		w.Session().DisableDataACK()
-		qm.Finish(w.Sequence())
+		qm.Finish(req.Opt.QueryId)
 	}()
 
 	err := s.Process()
@@ -166,6 +175,13 @@ func (p *SelectProcessor) Handle(w spdy.Responser, data interface{}) error {
 		default:
 			_ = w.Response(executor.NewErrorMessage(0, stderr.Error()), true)
 		}
+		return nil
+	}
+
+	if qm.IsKilled(req.Opt.QueryId) {
+		err = errno.NewError(errno.ErrQueryKilled, req.Opt.QueryId)
+		logger.GetLogger().Error("query killed", zap.Uint64("qid", req.Opt.QueryId), zap.Error(err))
+		_ = w.Response(executor.NewErrorMessage(errno.ErrQueryKilled, err.Error()), true)
 		return nil
 	}
 
@@ -191,10 +207,10 @@ func (p *AbortProcessor) Handle(w spdy.Responser, data interface{}) error {
 	}
 
 	logger.GetLogger().Info("AbortProcessor.Handle",
-		zap.Uint64("seq", msg.Seq),
+		zap.Uint64("qid", msg.QueryID),
 		zap.Uint64("clientID", msg.ClientID))
 
-	query.NewManager(msg.ClientID).Abort(msg.Seq)
+	query.NewManager(msg.ClientID).Abort(msg.QueryID)
 	err := w.Response(executor.NewFinishMessage(), true)
 	if err != nil {
 		logger.GetLogger().Error("failed to response finish message", zap.Error(err))

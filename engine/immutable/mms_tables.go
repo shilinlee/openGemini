@@ -634,6 +634,7 @@ func (m *MmsTables) DropMeasurement(_ context.Context, name string) error {
 	delete(m.CSFiles, name)
 	delete(m.PKFiles, name)
 
+	m.sequencer.DelMmsIdTime(name)
 	m.mu.Unlock()
 
 	mmsDir := filepath.Join(m.path, name)
@@ -1103,7 +1104,7 @@ func recoverFile(shardDir string, lockPath *string, engineType config.EngineType
 	return nil
 }
 
-// lint:ignore U1000 test used only
+//lint:ignore U1000 test used only
 func compareFile(f1, f2 interface{}) bool {
 	firstMin, firstMax, _ := f1.(TSSPFile).MinMaxTime()
 	secondMin, secondMax, _ := f2.(TSSPFile).MinMaxTime()
@@ -1116,7 +1117,7 @@ func compareFile(f1, f2 interface{}) bool {
 	return true
 }
 
-// lint:ignore U1000 test used only
+//lint:ignore U1000 test used only
 func compareFileByDescend(f1, f2 interface{}) bool {
 	firstMin, firstMax, _ := f1.(TSSPFile).MinMaxTime()
 	secondMin, secondMax, _ := f2.(TSSPFile).MinMaxTime()

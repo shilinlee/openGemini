@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -60,12 +61,11 @@ const (
 
 	DefaultIngesterAddress = "127.0.0.1:8400"
 	DefaultSelectAddress   = "127.0.0.1:8401"
-	DefaultDataDir         = "/tmp/openGemini/data"
-	DefaultWalDir          = "/tmp/openGemini/wal"
-	DefaultMetaDir         = "/tmp/openGemini/meta"
-	IndexFileDirectory     = "index"
-	DataDirectory          = "data"
-	WalDirectory           = "wal"
+
+	IndexFileDirectory = "index"
+	DataDirectory      = "data"
+	WalDirectory       = "wal"
+	MetaDirectory      = "meta"
 )
 
 // TSStore represents the configuration format for the influxd binary.
@@ -90,8 +90,9 @@ type TSStore struct {
 	Sherlock   *SherlockConfig    `toml:"sherlock"`
 	IODetector *iodetector.Config `toml:"io-detector"`
 
-	Meta      *Meta      `toml:"meta"`
-	ClvConfig *ClvConfig `toml:"clv_config"`
+	Meta       *Meta            `toml:"meta"`
+	ClvConfig  *ClvConfig       `toml:"clv_config"`
+	SelectSpec SelectSpecConfig `toml:"spec-limit"`
 }
 
 // NewTSStore returns an instance of Config with reasonable defaults.
@@ -209,7 +210,6 @@ type Store struct {
 	EnableMmapRead    bool          `toml:"enable-mmap-read"`
 	Readonly          bool          `toml:"readonly"`
 	CompactRecovery   bool          `toml:"compact-recovery"`
-	QuerySeriesLimit  int           `toml:"query-series-limit"`
 
 	ReadCacheLimit       toml.Size `toml:"read-cache-limit"`
 	WriteConcurrentLimit int       `toml:"write-concurrent-limit"`
@@ -236,9 +236,9 @@ func NewStore() Store {
 	return Store{
 		IngesterAddress:              DefaultIngesterAddress,
 		SelectAddress:                DefaultSelectAddress,
-		DataDir:                      DefaultDataDir,
-		WALDir:                       DefaultWalDir,
-		MetaDir:                      DefaultMetaDir,
+		DataDir:                      filepath.Join(openGeminiDir(), DataDirectory),
+		WALDir:                       filepath.Join(openGeminiDir(), WalDirectory),
+		MetaDir:                      filepath.Join(openGeminiDir(), MetaDirectory),
 		Engine:                       DefaultEngine,
 		ImmTableMaxMemoryPercentage:  DefaultImmutableMaxMemoryPercent,
 		CompactFullWriteColdDuration: toml.Duration(DefaultCompactFullWriteColdDuration),
@@ -259,7 +259,6 @@ func NewStore() Store {
 		WalReplayParallel:            false,
 		WalReplayAsync:               false,
 		CompactRecovery:              true,
-		QuerySeriesLimit:             0,
 		CompactionMethod:             0,
 		OpsMonitor:                   NewOpsMonitorConfig(),
 		OpenShardLimit:               0,

@@ -35,17 +35,13 @@ type HashMergeTransform struct {
 	inputs          []*ChunkPort
 	inputChunk      chan Chunk
 	bufChunk        Chunk
-	bufGroupKeys    [][]byte
-	bufGroupTags    []*ChunkTags
 	output          *ChunkPort
 	inputsCloseNums int
-	bufBatchSize    int
 
 	schema          *QuerySchema
 	opt             *query.ProcessorOptions
 	hashMergeLogger *logger.Logger
 	span            *tracing.Span
-	computeSpan     *tracing.Span
 
 	isChildDrained bool
 	hasDimension   bool
@@ -114,7 +110,7 @@ func (trans *HashMergeTransform) runnable(ctx context.Context, errs *errno.Errs,
 		if e := recover(); e != nil {
 			err := errno.NewError(errno.RecoverPanic, e)
 			trans.hashMergeLogger.Error(err.Error(), zap.String("query", "HashMergeTransform"),
-				zap.Uint64("trace_id", trans.opt.Traceid))
+				zap.Uint64("query_id", trans.opt.QueryId))
 			errs.Dispatch(err)
 		} else {
 			errs.Dispatch(nil)
@@ -163,7 +159,7 @@ func (trans *HashMergeTransform) getChunkFromChild() bool {
 			trans.isChildDrained = true
 			return false
 		}
-		c, _ := <-trans.inputChunk
+		c := <-trans.inputChunk
 		if c != nil {
 			trans.bufChunk = c
 			break
@@ -180,7 +176,7 @@ func (trans *HashMergeTransform) streamMergeHelper(ctx context.Context, errs *er
 		if e := recover(); e != nil {
 			err := errno.NewError(errno.RecoverPanic, e)
 			trans.hashMergeLogger.Error(err.Error(), zap.String("query", "HashMergeTransform"),
-				zap.Uint64("trace_id", trans.opt.Traceid))
+				zap.Uint64("query_id", trans.opt.QueryId))
 			errs.Dispatch(err)
 		} else {
 			errs.Dispatch(nil)

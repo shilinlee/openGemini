@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	set "github.com/deckarep/golang-set"
@@ -42,14 +41,15 @@ import (
 	"github.com/openGemini/openGemini/lib/logger"
 	"github.com/openGemini/openGemini/lib/rand"
 	"github.com/openGemini/openGemini/lib/statisticsPusher/statistics"
+	"github.com/openGemini/openGemini/lib/sysinfo"
 	"github.com/openGemini/openGemini/lib/util"
-	"github.com/openGemini/openGemini/open_src/golang.org/x/crypto/pbkdf2"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	meta2 "github.com/openGemini/openGemini/open_src/influx/meta"
 	proto2 "github.com/openGemini/openGemini/open_src/influx/meta/proto"
 	"github.com/openGemini/openGemini/open_src/influx/query"
 	"github.com/openGemini/openGemini/open_src/vm/protoparser/influx"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
@@ -84,7 +84,6 @@ const (
 	IndexGroupDeletedExpiration = -2 * 7 * 24 * time.Hour
 
 	RPCReqTimeout       = 10 * time.Second
-	HttpReqTimeout      = 10 * time.Second
 	HttpSnapshotTimeout = 4 * time.Second
 
 	//for lock user
@@ -117,6 +116,7 @@ var (
 	RetryGetUserInfoTimeout = 5 * time.Second
 	RetryExecTimeout        = 60 * time.Second
 	RetryReportTimeout      = 60 * time.Second
+	HttpReqTimeout          = 10 * time.Second
 )
 
 var DefaultTypeMapper = influxql.MultiTypeMapper(
@@ -214,6 +214,7 @@ type MetaClient interface {
 	GetMeasurementsInfoStore(dbName string, rpName string) (*meta2.MeasurementsInfo, error)
 	TagArrayEnabledFromServer(dbName string) (bool, error)
 	GetAllMst(dbName string) []string
+	RetryRegisterQueryIDOffset(host string) (uint64, error)
 }
 
 type LoadCtx struct {
@@ -480,7 +481,7 @@ func (c *Client) GetAllMst(dbName string) []string {
 	}
 
 	for _, rp := range c.cacheData.Databases[dbName].RetentionPolicies {
-		for mst, _ := range rp.Measurements {
+		for mst := range rp.Measurements {
 			mstName = append(mstName, mst)
 		}
 	}
@@ -1757,6 +1758,7 @@ func (c *Client) dealOnceAuthRecord(r *authRcd) {
 		case rcd := <-c.arChan:
 			rcdLst = append(rcdLst, rcd)
 		default:
+			//lint:ignore SA4011 ineffective break statement. Did you mean to break out of the outer loop?
 			break
 		}
 	}
@@ -3176,9 +3178,7 @@ func (c *Client) retryVerifyDataNodeStatus() error {
 func (c *Client) Suicide(err error) {
 	c.logger.Error("Suicide for fault data node", zap.Error(err))
 	time.Sleep(errSleep)
-	if e := syscall.Kill(syscall.Getpid(), syscall.SIGKILL); e != nil {
-		panic(fmt.Sprintf("FATAL: cannot send SIGKILL to itself: %v", e))
-	}
+	sysinfo.Suicide()
 }
 
 func (c *Client) RetryDBBriefInfo(dbName string) ([]byte, error) {
@@ -3246,6 +3246,64 @@ func (c *Client) TagArrayEnabled(db string) bool {
 	}
 
 	return c.cacheData.Databases[db].EnableTagArray
+}
+
+// RetryRegisterQueryIDOffset send a register rpc to ts-meta，request a query id offset
+func (c *Client) RetryRegisterQueryIDOffset(host string) (uint64, error) {
+	startTime := time.Now()
+	currentServer := connectedServer
+	var offset uint64
+	var ok bool
+	var err error
+
+	for {
+		c.mu.RLock()
+
+		if offset, ok = c.cacheData.QueryIDInit[meta2.SQLHost(host)]; ok {
+			c.logger.Info("current host has already registered in ts-meta")
+			c.mu.RUnlock()
+			return offset, nil
+		}
+
+		select {
+		case <-c.closing:
+			c.mu.RUnlock()
+			return 0, meta2.ErrClientClosed
+		default:
+			// we're still open, continue on
+		}
+		if currentServer >= len(c.metaServers) {
+			currentServer = 0
+		}
+		c.mu.RUnlock()
+
+		offset, err = c.registerOffset(currentServer, host)
+		if err == nil {
+			return offset, nil
+		}
+
+		currentServer++
+
+		if strings.Contains(err.Error(), "node is not the leader") {
+			continue
+		}
+
+		if time.Since(startTime).Seconds() > float64(len(c.metaServers))*HttpReqTimeout.Seconds() {
+			return 0, errors.New("register query id offset timeout")
+		}
+		time.Sleep(errSleep)
+	}
+}
+
+func (c *Client) registerOffset(currentServer int, host string) (uint64, error) {
+	callback := &RegisterQueryIDOffsetCallback{}
+	msg := message.NewMetaMessage(message.RegisterQueryIDOffsetRequestMessage, &message.RegisterQueryIDOffsetRequest{
+		Host: host})
+	err := c.SendRPCMsg(currentServer, msg, callback)
+	if err != nil {
+		return 0, err
+	}
+	return callback.Offset, nil
 }
 
 func refreshConnectedServer(currentServer int) {

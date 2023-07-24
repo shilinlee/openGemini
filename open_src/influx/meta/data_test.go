@@ -614,12 +614,14 @@ func TestShardGroupOutOfOrder(t *testing.T) {
 	assert(igs[0].EndTime.Equal(mustParseTime(time.RFC3339Nano, "2021-11-27T00:00:00Z")), "index group endTime error")
 	insertTime = mustParseTime(time.RFC3339Nano, "2021-11-25T13:00:00Z")
 	sg, err = data.ShardGroupByTimestampAndEngineType(dbName, rpName, insertTime, config.TSSTORE)
+	require.NoError(t, err)
 	assert(sg == nil, "shard group contain time %v should not exist", insertTime)
 	err = data.CreateShardGroup(dbName, rpName, insertTime, util.Hot, config.TSSTORE)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sg, err = data.ShardGroupByTimestampAndEngineType(dbName, rpName, insertTime, config.TSSTORE)
+	require.NoError(t, err)
 	assert(sg != nil, "shard group contain time %v should exist", insertTime)
 	index := sg.Shards[0].IndexID
 	igs = data.Database(dbName).RetentionPolicy(rpName).IndexGroups
@@ -808,7 +810,7 @@ func BenchmarkData_CreateDatabase(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		data.CreateDatabase(databases[i%n], nil, nil, false)
+		_ = data.CreateDatabase(databases[i%n], nil, nil, false)
 	}
 	b.StopTimer()
 }
@@ -861,7 +863,7 @@ func BenchmarkData_CreateMeasurement(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		data.CreateMeasurement(databases[i%n], rpName, mstName, nil, nil, 0, nil)
+		_ = data.CreateMeasurement(databases[i%n], rpName, mstName, nil, nil, 0, nil)
 	}
 	b.StopTimer()
 }
@@ -897,7 +899,7 @@ func BenchmarkData_CreateShardGroup(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		data.CreateShardGroup(databases[i%n], rpName, times[i%n], util.Hot, config.TSSTORE)
+		_ = data.CreateShardGroup(databases[i%n], rpName, times[i%n], util.Hot, config.TSSTORE)
 	}
 	b.StopTimer()
 }
@@ -1213,5 +1215,43 @@ func TestUpdateShardInfo(t *testing.T) {
 	s := data.Databases["db0"].RetentionPolicies["rp0"].ShardGroups[0].Shards[0]
 	if s.DownSampleID != 2 || s.DownSampleLevel != 2 {
 		t.Fatal()
+	}
+}
+
+func TestData_RegisterQueryIDOffset(t *testing.T) {
+	type fields struct {
+		QueryIDInit map[SQLHost]uint64
+	}
+	type args struct {
+		host SQLHost
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   uint64
+	}{
+		{
+			name:   "Success",
+			fields: fields{QueryIDInit: map[SQLHost]uint64{"127.0.0.1:1234": 0, "127.0.0.2:1234": QueryIDSpan}},
+			args:   args{host: "127.0.0.1:7890"},
+			want:   QueryIDSpan * 2,
+		},
+		{
+			name:   "DuplicateRegister",
+			fields: fields{QueryIDInit: map[SQLHost]uint64{"127.0.0.1:1234": 0}},
+			args:   args{host: "127.0.0.1:1234"},
+			want:   0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := &Data{
+				QueryIDInit: tt.fields.QueryIDInit,
+			}
+			err := data.RegisterQueryIDOffset(tt.args.host)
+			assert2.NoError(t, err)
+			assert(data.QueryIDInit[tt.args.host] == tt.want, "register failed")
+		})
 	}
 }

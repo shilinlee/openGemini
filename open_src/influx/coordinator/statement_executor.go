@@ -92,6 +92,100 @@ type StatementExecutor struct {
 	StmtExecLogger *logger.Logger
 }
 
+type combinedRunState uint8
+
+const (
+	allRunning combinedRunState = iota
+	partiallyKilled
+	allKilled
+)
+
+type combinedQueryExeInfo struct {
+	qid          uint64
+	stmt         string
+	database     string
+	beginTime    int64
+	runningHosts map[string]struct{}
+	killedHosts  map[string]struct{}
+}
+
+func (q *combinedQueryExeInfo) updateBeginTime(newBegin int64) {
+	if newBegin < q.beginTime {
+		q.beginTime = newBegin
+	}
+}
+
+func (q *combinedQueryExeInfo) updateHosts(newHost string, newRunState netstorage.RunStateType) {
+	switch newRunState {
+	case netstorage.Running:
+		q.runningHosts[newHost] = struct{}{}
+	case netstorage.Killed:
+		q.killedHosts[newHost] = struct{}{}
+	default:
+		// current version never arriving
+	}
+}
+
+func (q *combinedQueryExeInfo) getCombinedRunState() combinedRunState {
+	if len(q.runningHosts) == 0 {
+		return allKilled
+	} else if len(q.killedHosts) > 0 {
+		return partiallyKilled
+	} else {
+		return allRunning
+	}
+}
+
+// getDurationString return the query running time until now, without decimal point. ie. 3.456s --> 3s
+func (q *combinedQueryExeInfo) getDurationString() string {
+	begin := q.beginTime
+	d := time.Duration(time.Now().UnixNano() - begin)
+	switch {
+	case d >= time.Second:
+		d = d - (d % time.Second)
+	case d >= time.Millisecond:
+		d = d - (d % time.Millisecond)
+	case d >= time.Microsecond:
+		d = d - (d % time.Microsecond)
+	}
+	return d.String()
+}
+
+func (q *combinedQueryExeInfo) toOutputRow(colNum int, isKilledPart bool) []interface{} {
+	res := make([]interface{}, 0, colNum)
+
+	var hostsJoined = func(hostsKV map[string]struct{}) string {
+		hosts := make([]string, 0, len(hostsKV))
+		for host := range hostsKV {
+			hosts = append(hosts, host)
+		}
+		return strings.Join(hosts, ", ")
+	}
+
+	res = append(res, q.qid, q.stmt, q.database, q.getDurationString())
+	if isKilledPart {
+		res = append(res, "killed", hostsJoined(q.killedHosts))
+	} else {
+		res = append(res, "running", hostsJoined(q.runningHosts))
+	}
+
+	return res
+}
+
+type combinedInfos []*combinedQueryExeInfo
+
+func (c combinedInfos) Len() int {
+	return len(c)
+}
+
+func (c combinedInfos) Less(i, j int) bool {
+	return c[i].beginTime < c[j].beginTime
+}
+
+func (c combinedInfos) Swap(i, j int) {
+	c[i], c[j] = c[j], c[i]
+}
+
 func (e *StatementExecutor) Close() error {
 	return e.ShardMapper.Close()
 }
@@ -274,10 +368,10 @@ func (e *StatementExecutor) ExecuteStatement(stmt influxql.Statement, ctx *query
 			messages = append(messages, query.ReadOnlyWarning(stmt.String()))
 		}
 		err = e.executeSetPasswordUserStatement(stmt)
-	case *influxql.ShowQueriesStatement, *influxql.KillQueryStatement:
-		return meta2.ErrUnsupportCommand
-		// Send query related statements to the task manager.
-		return e.TaskManager.ExecuteStatement(stmt, ctx)
+	case *influxql.ShowQueriesStatement:
+		rows, err = e.executeShowQueriesStatement()
+	case *influxql.KillQueryStatement:
+		err = e.executeKillQuery(stmt)
 	case *influxql.PrepareSnapshotStatement:
 		return meta2.ErrUnsupportCommand
 		err = e.executePrepareSnapshotStatement(stmt, ctx)
@@ -978,7 +1072,6 @@ func (e *StatementExecutor) GetOptions(opt query2.ExecutionOptions) query2.Selec
 		QueryLimitEn:            opt.QueryLimitEn,
 		RowsChan:                opt.RowsChan,
 		ChunkSize:               opt.InnerChunkSize,
-		Traceid:                 opt.Traceid,
 		AbortChan:               opt.AbortCh,
 	}
 }
@@ -994,7 +1087,7 @@ func (e *StatementExecutor) createPipelineExecutor(ctx context.Context, stmt *in
 			}
 
 			stackInfo := fmt.Errorf("runtime panic: %v\n %s", e, string(debug.Stack())).Error()
-			logger.NewLogger(errno.ModuleQueryEngine).Error(stackInfo, zap.Uint64("trace_id", opt.Traceid),
+			logger.NewLogger(errno.ModuleQueryEngine).Error(stackInfo, zap.Uint64("query_id", ctx.Value(query2.QueryIDKey).(uint64)),
 				zap.String("query", "pipeline executor"))
 		}
 	}()
@@ -1089,7 +1182,7 @@ func (e *StatementExecutor) executeShowMeasurementKeysStatement(stmt *influxql.S
 		row.Values = [][]interface{}{{config.EngineType2String[mst.EngineType]}}
 		return []*models.Row{row}, nil
 	default:
-		return nil, errors.New(fmt.Sprintf("%s is not support for this command", stmt.Name))
+		return nil, fmt.Errorf("%s is not support for this command", stmt.Name)
 	}
 }
 
@@ -1631,6 +1724,134 @@ func (e *StatementExecutor) executeShowUsersStatement(q *influxql.ShowUsersState
 		row.Values = append(row.Values, []interface{}{ui.Name, ui.Admin, ui.Rwuser})
 	}
 	return []*models.Row{row}, nil
+}
+
+func (e *StatementExecutor) executeShowQueriesStatement() (models.Rows, error) {
+	nodes, err := e.MetaClient.DataNodes()
+	if err != nil {
+		return nil, err
+	}
+
+	resMap := make(map[uint64]*combinedQueryExeInfo)
+	infosOnAllStore := make([][]*netstorage.QueryExeInfo, len(nodes))
+
+	// Concurrent access to all store nodes.
+	wg := sync.WaitGroup{}
+	var mu sync.Mutex
+	for i, node := range nodes {
+		wg.Add(1)
+		go func(index int, nodeID uint64) {
+			defer wg.Done()
+			infos := e.getQueryExeInfoOnNode(nodeID)
+			mu.Lock()
+			defer mu.Unlock()
+			infosOnAllStore[index] = infos
+		}(i, node.ID)
+	}
+	wg.Wait()
+
+	// Combine all results from all store nodes into resMap.
+	for i, infos := range infosOnAllStore {
+		combineQueryExeInfos(resMap, infos, nodes[i].Host)
+	}
+
+	// Sort the res by duration to beautify the output.
+	sortedResult := make(combinedInfos, 0, len(resMap))
+	for _, val := range resMap {
+		sortedResult = append(sortedResult, val)
+	}
+	sort.Sort(sortedResult)
+
+	row := models.Row{Columns: []string{"qid", "query", "database", "duration", "status", "host"}}
+	values := make([][]interface{}, 0, len(resMap))
+
+	// Generate output row for every query
+	for _, cmbInfo := range sortedResult {
+		switch cmbInfo.getCombinedRunState() {
+		case allKilled:
+			continue
+		case partiallyKilled:
+			// If this query was killed on a part of store nodes, split hosts to 2 part of "killed" and "running"
+			values = append(values, cmbInfo.toOutputRow(len(row.Columns), true))
+		case allRunning:
+		}
+		values = append(values, cmbInfo.toOutputRow(len(row.Columns), false))
+	}
+	row.Values = values
+	return models.Rows{&row}, nil
+}
+
+func (e *StatementExecutor) getQueryExeInfoOnNode(nodeID uint64) []*netstorage.QueryExeInfo {
+	exeInfos, err := e.NetStorage.GetQueriesOnNode(nodeID)
+	if err != nil {
+		return make([]*netstorage.QueryExeInfo, 0)
+	}
+	return exeInfos
+}
+
+// combineQueryExeInfos combines queryExeInfo from different store nodes by QueryID.
+func combineQueryExeInfos(dstMap map[uint64]*combinedQueryExeInfo, exeInfosOnStore []*netstorage.QueryExeInfo, host string) {
+	for _, info := range exeInfosOnStore {
+		// If a query in dstMap, update its killed,host and duration
+		if cmbInfo, ok := dstMap[info.QueryID]; ok {
+			if cmbInfo.stmt == info.Stmt {
+				cmbInfo.updateBeginTime(info.BeginTime)
+				cmbInfo.updateHosts(host, info.RunState)
+				continue
+			}
+
+			// If a query whose qid is 1 has been sent to the store and is being queried,
+			// the SQL node restarts, and the new query qid starts from 1.
+			// In this case, the old query whose qid is 1 needs to be filtered out.
+			if info.BeginTime <= cmbInfo.beginTime {
+				continue
+			}
+		}
+		// Create a new cmbInfo
+		newCmbInfo := &combinedQueryExeInfo{
+			qid:          info.QueryID,
+			stmt:         info.Stmt,
+			database:     info.Database,
+			beginTime:    info.BeginTime,
+			runningHosts: make(map[string]struct{}),
+			killedHosts:  make(map[string]struct{}),
+		}
+		newCmbInfo.updateHosts(host, info.RunState)
+		dstMap[info.QueryID] = newCmbInfo
+	}
+}
+
+func (e *StatementExecutor) executeKillQuery(stmt *influxql.KillQueryStatement) error {
+	if stmt.Host != "" {
+		return meta2.ErrUnsupportCommand
+	}
+	nodes, err := e.MetaClient.DataNodes()
+	if err != nil {
+		return err
+	}
+
+	notFoundCount := 0
+
+	var wg sync.WaitGroup
+	for _, n := range nodes {
+		wg.Add(1)
+		go func(dataNode meta2.DataNode) {
+			defer wg.Done()
+			if err = e.NetStorage.KillQueryOnNode(dataNode.ID, stmt.QueryID); err != nil {
+				var wrapErr *errno.Error
+				if errors.As(err, &wrapErr) && errno.Equal(wrapErr, errno.ErrQueryNotFound) {
+					notFoundCount++
+					return
+				}
+			}
+		}(n)
+	}
+	wg.Wait()
+
+	if notFoundCount == len(nodes) {
+		return errno.NewError(errno.ErrQueryNotFound, stmt.QueryID)
+	}
+	return nil
 }
 
 func (e *StatementExecutor) Statistics(buffer []byte) ([]byte, error) {

@@ -44,7 +44,6 @@ import (
 
 type MockStoreEngine struct {
 	readerCount int
-	node        *metaclient.Node
 }
 
 func NewMockStoreEngine(readerCount int) *MockStoreEngine {
@@ -339,4 +338,19 @@ func TestNewShardTraits(t *testing.T) {
 	config.SetHaEnable(false)
 	traits := s.NewShardTraits(s.req, s.w)
 	require.NotEmpty(t, traits)
+}
+
+func TestSelect_GetQueryExeInfo(t *testing.T) {
+	rq := executor.RemoteQuery{
+		Opt: qry.ProcessorOptions{
+			QueryId: 1,
+			Query:   "SELECT * FROM mst1",
+		},
+		Database: "db1",
+	}
+	s := NewSelect(nil, nil, &rq)
+	info := s.GetQueryExeInfo()
+	require.Equal(t, rq.Opt.QueryId, info.QueryID)
+	require.Equal(t, rq.Opt.Query, info.Stmt)
+	require.Equal(t, rq.Database, info.Database)
 }

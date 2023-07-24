@@ -20,8 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"syscall"
 	"time"
+
+	"github.com/openGemini/openGemini/lib/sysinfo"
 )
 
 const (
@@ -116,9 +117,7 @@ func (d *IODetector) detectIO() {
 		case <-ticker.C:
 			if time.Since(beforeTime) > time.Duration(d.timeoutThreshold)*time.Second {
 				// process suicide
-				if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
-					fmt.Printf("error process syscall.Kill:%v\n", err)
-				}
+				sysinfo.Suicide()
 				return
 			}
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/openGemini/openGemini/engine/hybridqp"
 	"github.com/openGemini/openGemini/open_src/influx/influxql"
 	"github.com/openGemini/openGemini/open_src/influx/query"
+	"github.com/stretchr/testify/assert"
 )
 
 func NewAggIntervalSchema() hybridqp.Catalog {
@@ -282,6 +283,9 @@ func TestPlanTypeShard(t *testing.T) {
 	if _, err := init.LogicalPlanCost(nil, query.ProcessorOptions{}); err != nil {
 		t.Error("planTypeShard cost error")
 	}
+	if init.GetSeriesKey() != nil {
+		t.Error("planTypeShard getSeriesKey error")
+	}
 	initMapper := executor.NewPlanTypeInitShardMapper()
 	if initMapper.Close() != nil {
 		t.Error("planTypeShardMapper close error")
@@ -299,9 +303,7 @@ func TestPlanTypeSliceByTree(t *testing.T) {
 
 func TestErrorTemplatePlan(t *testing.T) {
 	executor.TemplateSql = append(executor.TemplateSql, "error query")
-	CachedSqlPlan, _ := executor.NewSqlPlanTypePool(executor.PlanType(len(executor.TemplateSql) - 1))
-	if len(CachedSqlPlan) != len(CachedSqlPlan) {
-		t.Error("cache plan error")
-	}
+	_, err := executor.NewSqlPlanTypePool(executor.PlanType(len(executor.TemplateSql) - 1))
+	assert.ErrorContains(t, err, "syntax error")
 	executor.TemplateSql = executor.TemplateSql[:len(executor.TemplateSql)-1]
 }

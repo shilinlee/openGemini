@@ -255,8 +255,14 @@ func TestClusterManager_ActiveTakeover(t *testing.T) {
 	config.SetHaEnable(true)
 	globalService.store.data.TakeOverEnabled = true
 	globalService.store.NetStore = NewMockNetStorage()
-	e = *generateMemberEvent(serf.EventMemberJoin, "2", 2, serf.StatusAlive)
 
+	if err = globalService.store.ApplyCmd(GenerateCreateDataNodeCmd("127.0.0.1:8400", "127.0.0.1:8401")); err != nil {
+		t.Fatal(err)
+	}
+	dataNode := globalService.store.data.DataNodeByHttpHost("127.0.0.1:8400")
+	dataNode.AliveConnID = dataNode.ConnID - 1
+
+	e = *generateMemberEvent(serf.EventMemberJoin, "2", 2, serf.StatusAlive)
 	globalService.clusterManager.eventCh <- e
 	timer := time.NewTimer(30 * time.Second)
 	// wait db pt got to process
@@ -306,6 +312,13 @@ func TestClusterManager_LeaderChanged(t *testing.T) {
 	config.SetHaEnable(true)
 	globalService.store.data.TakeOverEnabled = true
 	globalService.store.NetStore = NewMockNetStorage()
+
+	if err = globalService.store.ApplyCmd(GenerateCreateDataNodeCmd("127.0.0.1:8400", "127.0.0.1:8401")); err != nil {
+		t.Fatal(err)
+	}
+	dataNode = globalService.store.data.DataNodeByHttpHost("127.0.0.1:8400")
+	dataNode.AliveConnID = dataNode.ConnID - 1
+
 	e = *generateMemberEvent(serf.EventMemberJoin, "2", 2, serf.StatusAlive)
 	globalService.clusterManager.eventCh <- e
 	assert.Equal(t, serf.StatusAlive, globalService.store.data.DataNode(2).Status)
@@ -372,7 +385,7 @@ func TestClusterManager_PassiveTakeOver_WhenDropDB(t *testing.T) {
 	_ = store.data.UpdateNodeStatus(n1, int32(serf.StatusAlive), 1, "127.0.0.1:8011")
 	_ = store.data.UpdateNodeStatus(n2, int32(serf.StatusAlive), 1, "127.0.0.1:8011")
 	_ = store.data.UpdateNodeStatus(n3, int32(serf.StatusAlive), 1, "127.0.0.1:8011")
-	store.data.CreateDatabase("db0", nil, nil, false)
+	assert.NoError(t, store.data.CreateDatabase("db0", nil, nil, false))
 	c.store = store
 
 	dbPt := &meta.DbPtInfo{
@@ -382,5 +395,5 @@ func TestClusterManager_PassiveTakeOver_WhenDropDB(t *testing.T) {
 		},
 	}
 
-	c.processFailedDbPt(dbPt, nil, true)
+	assert.EqualError(t, c.processFailedDbPt(dbPt, nil, true), "pt not found")
 }

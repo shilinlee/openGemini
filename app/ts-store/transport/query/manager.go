@@ -19,6 +19,8 @@ package query
 import (
 	"sync"
 	"time"
+
+	"github.com/openGemini/openGemini/lib/netstorage"
 )
 
 const (
@@ -27,14 +29,16 @@ const (
 
 type IQuery interface {
 	Abort()
+	GetQueryExeInfo() *netstorage.QueryExeInfo
 }
 
 type Manager struct {
 	mu    sync.RWMutex
 	items map[uint64]*Item
 
-	abortedMu sync.RWMutex
-	aborted   map[uint64]time.Time
+	abortedMu sync.RWMutex         // lock for both killed and aborted
+	killed    map[uint64]struct{}  // {"qid": struct{}{}} kill query qid
+	aborted   map[uint64]time.Time // {"qid": time} abort time for qid
 
 	abortedExpire time.Duration
 }
@@ -45,20 +49,30 @@ type Item struct {
 }
 
 var managers map[uint64]*Manager
-var mu sync.Mutex
+var managersMu sync.RWMutex
 
 func init() {
 	managers = make(map[uint64]*Manager)
 }
 
+// VisitManagers can do something foreach every manager. Like get all queries.
+func VisitManagers(fn func(*Manager)) {
+	managersMu.RLock()
+	defer managersMu.RUnlock()
+	for _, manager := range managers {
+		fn(manager)
+	}
+}
+
 func NewManager(client uint64) *Manager {
-	mu.Lock()
-	defer mu.Unlock()
+	managersMu.Lock()
+	defer managersMu.Unlock()
 
 	m, ok := managers[client]
 	if !ok || m == nil {
 		m = &Manager{
 			items:         make(map[uint64]*Item),
+			killed:        make(map[uint64]struct{}),
 			aborted:       make(map[uint64]time.Time),
 			abortedExpire: defaultAbortedExpire,
 		}
@@ -69,59 +83,73 @@ func NewManager(client uint64) *Manager {
 	return m
 }
 
-func (qm *Manager) Get(seq uint64) IQuery {
+func (qm *Manager) Get(qid uint64) IQuery {
 	qm.mu.RLock()
 	defer qm.mu.RUnlock()
 
-	h, ok := qm.items[seq]
+	h, ok := qm.items[qid]
 	if !ok {
 		return nil
 	}
 	return h.val
 }
 
-func (qm *Manager) Add(seq uint64, v IQuery) {
+func (qm *Manager) Add(qid uint64, v IQuery) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 
-	_, ok := qm.items[seq]
+	_, ok := qm.items[qid]
 	if ok {
 		return
 	}
-	qm.items[seq] = &Item{
+	qm.items[qid] = &Item{
 		begin: time.Now(),
 		val:   v,
 	}
 }
 
-func (qm *Manager) Aborted(seq uint64) bool {
+func (qm *Manager) Aborted(qid uint64) bool {
 	qm.abortedMu.RLock()
 	defer qm.abortedMu.RUnlock()
 
-	_, ok := qm.aborted[seq]
+	_, ok := qm.aborted[qid]
 	return ok
 }
 
-func (qm *Manager) Abort(seq uint64) {
+func (qm *Manager) IsKilled(qid uint64) bool {
+	qm.abortedMu.RLock()
+	defer qm.abortedMu.RUnlock()
+
+	_, ok := qm.killed[qid]
+	return ok
+}
+
+func (qm *Manager) Kill(qid uint64) {
 	qm.abortedMu.Lock()
-	qm.aborted[seq] = time.Now()
+	qm.killed[qid] = struct{}{}
+	qm.abortedMu.Unlock()
+}
+
+func (qm *Manager) Abort(qid uint64) {
+	qm.abortedMu.Lock()
+	qm.aborted[qid] = time.Now()
 	qm.abortedMu.Unlock()
 
-	h := qm.Get(seq)
+	h := qm.Get(qid)
 	if h != nil {
 		h.Abort()
 	}
 }
 
-func (qm *Manager) Finish(seq uint64) {
+func (qm *Manager) Finish(qid uint64) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 
-	_, ok := qm.items[seq]
+	_, ok := qm.items[qid]
 	if !ok {
 		return
 	}
-	delete(qm.items, seq)
+	delete(qm.items, qid)
 }
 
 func (qm *Manager) SetAbortedExpire(d time.Duration) {
@@ -150,6 +178,29 @@ func (qm *Manager) cleanAbort() {
 	qm.abortedMu.Lock()
 	for _, k := range wait {
 		delete(qm.aborted, k)
+		delete(qm.killed, k)
 	}
 	qm.abortedMu.Unlock()
+}
+
+// GetAll return the all query exe infos keeping by a manager
+func (qm *Manager) GetAll() []*netstorage.QueryExeInfo {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+
+	exeInfos := make([]*netstorage.QueryExeInfo, 0, len(qm.items))
+	for qid, item := range qm.items {
+		// unchangeable information
+		info := item.val.GetQueryExeInfo()
+		// changeable information
+		if qm.Aborted(qid) {
+			info.RunState = netstorage.Killed
+		} else {
+			info.RunState = netstorage.Running
+		}
+		info.BeginTime = item.begin.UnixNano()
+		exeInfos = append(exeInfos, info)
+	}
+
+	return exeInfos
 }

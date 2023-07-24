@@ -239,7 +239,7 @@ func generateData(ms *meta.MetaService, db, rp, mst string, shardKeyN int, value
 					return
 				}
 				// create shard group
-				sg, err := ms.GetStore().GetData().ShardGroupByTimestampAndEngineType(db, rp, timestamp, config.TSSTORE)
+				sg, _ := ms.GetStore().GetData().ShardGroupByTimestampAndEngineType(db, rp, timestamp, config.TSSTORE)
 				if sg == nil {
 					cmd := meta.GenerateCreateShardGroupCmd(db, rp, timestamp, config.TSSTORE)
 					err := ms.GetStore().ApplyCmd(cmd)
@@ -836,6 +836,27 @@ func TestCreateDataNodeRepeat(t *testing.T) {
 	}
 	mms.GetStore().GetData().MetaNodes = append(mms.GetStore().GetData().MetaNodes, *new(meta2.NodeInfo))
 	cmd = meta.GenerateCreateDataNodeCmd("127.0.0.1:8400", "127.0.0.1:8401")
+	if err = mms.GetStore().ApplyCmd(cmd); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStore_registerQueryIDOffset(t *testing.T) {
+	dir := t.TempDir()
+	mms, err := meta.NewMockMetaService(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mms.Close()
+	cmd := meta.GenerateRegisterQueryIDOffsetCmd("127.0.0.1:8086")
+	if err = mms.GetStore().ApplyCmd(cmd); err != nil {
+		t.Fatal(err)
+	}
+	cmd = meta.GenerateRegisterQueryIDOffsetCmd("127.0.0.1:8087")
+	if err = mms.GetStore().ApplyCmd(cmd); err != nil {
+		t.Fatal(err)
+	}
+	cmd = meta.GenerateRegisterQueryIDOffsetCmd("127.0.0.1:8088")
 	if err = mms.GetStore().ApplyCmd(cmd); err != nil {
 		t.Fatal(err)
 	}
