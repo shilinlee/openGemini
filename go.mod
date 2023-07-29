@@ -3,14 +3,13 @@ module github.com/openGemini/openGemini
 go 1.18
 
 require (
-	codehub-g.huawei.com/sec/seccomponent v1.1.8
 	github.com/BurntSushi/toml v0.4.1
 	github.com/Masterminds/goutils v1.1.1
 	github.com/RoaringBitmap/roaring v0.9.1
 	github.com/VictoriaMetrics/VictoriaMetrics v1.67.0
 	github.com/VictoriaMetrics/fastcache v1.7.0
 	github.com/agiledragon/gomonkey/v2 v2.10.1
-	github.com/apache/arrow/go/arrow v0.0.0-20200923215132-ac86123a3f01
+	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40
 	github.com/armon/go-metrics v0.3.10
 	github.com/bmizerany/pat v0.0.0-20210406213842-e4b6760bdd6f
 	github.com/cespare/xxhash/v2 v2.2.0
@@ -25,7 +24,7 @@ require (
 	github.com/influxdata/influxql v1.1.1-0.20210223160523-b6ab99450c93
 	github.com/influxdata/tdigest v0.0.2-0.20210216194612-fc98d27c9e8b
 	github.com/json-iterator/go v1.1.12
-	github.com/klauspost/compress v1.13.6
+	github.com/klauspost/compress v1.15.9
 	github.com/mitchellh/cli v1.1.5
 	github.com/mitchellh/copystructure v1.2.0
 	github.com/nxadm/tail v1.4.8
@@ -37,7 +36,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.22.1
 	github.com/smartystreets/goconvey v1.7.2
 	github.com/spf13/cobra v1.3.0
-	github.com/stretchr/testify v1.7.4
+	github.com/stretchr/testify v1.8.0
 	github.com/tinylib/msgp v1.1.7-0.20220719154719-f3635b96e483
 	github.com/valyala/fastjson v1.6.3
 	github.com/xlab/treeprint v1.1.0
@@ -48,7 +47,8 @@ require (
 	golang.org/x/sys v0.6.0
 	golang.org/x/text v0.8.0
 	golang.org/x/time v0.0.0-20210723032227-1f47c861a9ac
-	google.golang.org/protobuf v1.27.1
+	google.golang.org/grpc v1.49.0
+	google.golang.org/protobuf v1.31.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.1-0.20190411184413-94d9e492cc53-cloudmnet.1
 )
 
@@ -78,11 +78,11 @@ require (
 	github.com/go-chi/chi v4.1.0+incompatible // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/gofrs/uuid v3.3.0+incompatible // indirect
-	github.com/golang/protobuf v1.5.2 // indirect
+	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/btree v1.0.0 // indirect
-	github.com/google/flatbuffers v2.0.0+incompatible // indirect
+	github.com/google/flatbuffers v2.0.8+incompatible // indirect
 	github.com/google/go-cmp v0.5.7 // indirect
-	github.com/google/uuid v1.1.2 // indirect
+	github.com/google/uuid v1.3.0 // indirect
 	github.com/gopherjs/gopherjs v0.0.0-20181017120253-0766667cb4d1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
@@ -96,7 +96,7 @@ require (
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/hashicorp/mdns v1.0.4 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
-	github.com/imdario/mergo v0.3.11 // indirect
+	github.com/imdario/mergo v0.3.12 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/influxdata/flux v0.131.0 // indirect
 	github.com/influxdata/httprouter v1.3.1-0.20191122104820-ee83e2772f69 // indirect
@@ -107,7 +107,7 @@ require (
 	github.com/jwilder/encoding v0.0.0-20170811194829-b4e1701a28ef // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
-	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/miekg/dns v1.1.43 // indirect
 	github.com/mitchellh/mapstructure v1.4.3 // indirect
@@ -117,6 +117,7 @@ require (
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/philhofer/fwd v1.1.2-0.20210722190033-5c56ac6d0bb9 // indirect
+	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/pingcap/errors v0.11.4 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
@@ -145,9 +146,8 @@ require (
 	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/net v0.8.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	golang.org/x/xerrors v0.0.0-20220609144429-65e65417b02f // indirect
 	google.golang.org/genproto v0.0.0-20211208223120-3a66f561d7aa // indirect
-	google.golang.org/grpc v1.42.0 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

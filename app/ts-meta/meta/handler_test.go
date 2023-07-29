@@ -153,6 +153,14 @@ func (w *MockResponseWriter) WriteHeader(statusCode int) {
 type MockIStore struct {
 }
 
+func (s *MockIStore) leaderHTTP() string {
+	return ""
+}
+
+func (s *MockIStore) leadershipTransfer() error {
+	return nil
+}
+
 func (s *MockIStore) index() uint64 {
 	return 0
 }
