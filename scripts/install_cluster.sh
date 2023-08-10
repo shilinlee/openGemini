@@ -24,18 +24,44 @@ do
     nodes[$i]=127.0.0.$i
 done
 
-# generate config
-for((i = 1; i <= 3; i++))
-do
-    rm -rf config/openGemini-$i.conf
-    cp config/openGemini.conf config/openGemini-$i.conf
-    sed -i "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
-    sed -i "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
-    sed -i "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
-    sed -i "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
+if [ "$(uname)" == "Darwin" ]; then
+  echo "ref link:"
+  echo "https://superuser.com/questions/458875/how-do-you-get-loopback-addresses-other-than-127-0-0-1-to-work-on-os-x"
+  echo "temporarily open 127.0.0.2/127.0.0.3 for ts-store/ts-meta, please enter admin pwd:"
+  sudo ifconfig lo0 alias 127.0.0.2 up
+  sudo ifconfig lo0 alias 127.0.0.3 up
 
-    sed -i "s/{{id}}/$i/g" config/openGemini-$i.conf
-done
+  # generate config
+  for((i = 1; i <= 3; i++))
+  do
+      rm -rf config/openGemini-$i.conf
+      cp config/openGemini.conf config/openGemini-$i.conf
+
+      sed -i "" "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
+      sed -i "" "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
+      sed -i "" "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
+      sed -i "" "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
+
+      sed -i "" "s/{{id}}/$i/g" config/openGemini-$i.conf
+  done
+elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
+      # generate config
+      for((i = 1; i <= 3; i++))
+      do
+          rm -rf config/openGemini-$i.conf
+          cp config/openGemini.conf config/openGemini-$i.conf
+
+          sed -i "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
+          sed -i "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
+          sed -i "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
+          sed -i "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
+
+          sed -i "s/{{id}}/$i/g" config/openGemini-$i.conf
+      done
+else
+  echo "not support the platform": $(uname)
+  exit 1
+fi
 
 rm -rf /tmp/openGemini/logs
 mkdir -p /tmp/openGemini/logs/1

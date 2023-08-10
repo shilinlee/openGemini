@@ -31,7 +31,7 @@ import (
 	"github.com/openGemini/openGemini/open_src/influx/meta"
 )
 
-//go:generate tmpl -data=@../tmpldata handlers.gen.go.tmpl
+//go:generate tmpl -data=@./tmpldata handlers.gen.go.tmpl
 
 type MetaStoreInterface interface {
 	leader() string
@@ -133,6 +133,6 @@ func (p *Processor) Handle(w spdy.Responser, data interface{}) error {
 	if err != nil {
 		return err
 	}
-	respTyp := message.GetResponseMessageType(msg.Type())
+	respTyp := message.MetaMessageResponseTyp[msg.Type()]
 	return w.Response(message.NewMetaMessage(respTyp, resp), true)
 }

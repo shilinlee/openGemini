@@ -29,7 +29,6 @@ import (
 	"github.com/openGemini/openGemini/app/ts-store/storage"
 	"github.com/openGemini/openGemini/app/ts-store/stream"
 	"github.com/openGemini/openGemini/app/ts-store/transport"
-	"github.com/openGemini/openGemini/engine/executor"
 	"github.com/openGemini/openGemini/engine/immutable"
 	"github.com/openGemini/openGemini/engine/mutable"
 	"github.com/openGemini/openGemini/lib/config"
@@ -124,8 +123,6 @@ func NewServer(c config.Config, info app.ServerInfo, logger *Logger.Logger) (app
 	node := metaclient.NewNode(s.metaPath)
 	s.node = node
 
-	executor.SetPipelineExecutorResourceManagerParas(int64(conf.Common.MemoryLimitSize), time.Duration(conf.Common.MemoryWaitTime))
-
 	s.StoreService = NewService(&conf.Data)
 
 	s.sherlockService = sherlock.NewService(conf.Sherlock)
@@ -176,8 +173,11 @@ func (s *Server) Open() error {
 		s.node.Clock = metaclient.LogicClock
 	}
 
+	s.metaClient = metaclient.DefaultMetaClient
+	s.metaClient.OpenAtStore()
+
 	log := Logger.GetLogger()
-	s.storage, err = storage.OpenStorage(s.storageDataPath, s.node, commHttpHandler.MetaClient.(*metaclient.Client), s.config)
+	s.storage, err = storage.OpenStorage(s.storageDataPath, s.node, s.metaClient.(*metaclient.Client), s.config)
 	if err != nil {
 		er := fmt.Errorf("cannot open a storage at %s, %s", s.storageDataPath, err)
 		panic(er)
@@ -201,7 +201,6 @@ func (s *Server) Open() error {
 	}
 	s.initStatisticsPusher()
 
-	s.metaClient = metaclient.DefaultMetaClient
 	if s.StoreService != nil {
 		// Open store service.
 		if err := s.StoreService.Open(); err != nil {
@@ -210,7 +209,7 @@ func (s *Server) Open() error {
 		s.StoreService.handler.SetstatisticsPusher(s.statisticsPusher)
 		s.StoreService.handler.metaClient = s.metaClient
 	}
-	s.metaClient.OpenAtStore()
+
 	if s.sherlockService != nil {
 		s.sherlockService.Open()
 	}
