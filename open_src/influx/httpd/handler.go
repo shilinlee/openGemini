@@ -109,6 +109,10 @@ type Route struct {
 	HandlerFunc    interface{}
 }
 
+type SubscriberManager interface {
+	Send(db, rp string, lineProtocol []byte)
+}
+
 // Handler represents an HTTP handler for the InfluxDB server.
 type Handler struct {
 	mux       *pat.PatternServeMux
@@ -145,6 +149,8 @@ type Handler struct {
 	PointsWriter interface {
 		RetryWritePointRows(database, retentionPolicy string, points []influx.Row) error
 	}
+
+	SubscriberManager
 
 	Config           *config.Config
 	Logger           *logger.Logger
@@ -363,6 +369,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDebugRequests(w, r)
 	} else if strings.HasPrefix(r.URL.Path, "/debug/vars") {
 		h.serveExpvar(w, r)
+	} else if strings.HasPrefix(r.URL.Path, "/debug/query") {
+		h.serveDebugQuery(w, r)
 	} else {
 		h.mux.ServeHTTP(w, r)
 	}
@@ -420,9 +428,15 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 	h.requestTracker.Add(r, user)
 
 	// Retrieve the underlying ResponseWriter or initialize our own.
-	rw, ok := w.(httpd.ResponseWriter)
+	rw, ok := w.(ResponseWriter)
 	if !ok {
-		rw = httpd.NewResponseWriter(w, r)
+		rw = NewResponseWriter(w, r)
+	}
+
+	if syscontrol.DisableReads {
+		h.httpError(rw, `disable read!`, http.StatusForbidden)
+		h.Logger.Error("read is forbidden!", zap.Bool("DisableReads", syscontrol.DisableReads))
+		return
 	}
 
 	// Retrieve the node id the query should be executed on.
@@ -533,6 +547,7 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 		h.Logger.Error("query error! parsing query value", zap.Error(err), zap.String("db", db), zap.Any("r", r))
 		return
 	}
+
 	// Check authorization.
 	if h.Config.AuthEnabled {
 		var userID string
@@ -634,7 +649,7 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 	}
 
 	// if we're not chunking, this will be the in memory buffer for all results before sending to client
-	resp := httpd.Response{Results: make([]*query.Result, 0)}
+	resp := Response{Results: make([]*query.Result, 0)}
 	stmtID2Result := make(map[int]*query.Result)
 
 	// Status header is OK once this point is reached.
@@ -660,7 +675,7 @@ func (h *Handler) serveQuery(w http.ResponseWriter, r *http.Request, user meta2.
 
 		// Write out result immediately if chunked.
 		if chunked {
-			n, _ := rw.WriteResponse(httpd.Response{
+			n, _ := rw.WriteResponse(Response{
 				Results: []*query.Result{r},
 			})
 			atomic.AddInt64(&statistics.HandlerStat.QueryRequestBytesTransmitted, int64(n))
@@ -829,6 +844,12 @@ func (h *Handler) serveWrite(w http.ResponseWriter, r *http.Request, user meta2.
 	}(time.Now())
 	h.requestTracker.Add(r, user)
 
+	if syscontrol.DisableWrites {
+		h.httpError(w, `disable write!`, http.StatusForbidden)
+		h.Logger.Error("write is forbidden!", zap.Bool("DisableWrites", syscontrol.DisableWrites))
+		return
+	}
+
 	database := r.URL.Query().Get("db")
 	if database == "" {
 		err := errno.NewError(errno.HttpDatabaseNotFound)
@@ -917,6 +938,7 @@ func (h *Handler) serveWrite(w http.ResponseWriter, r *http.Request, user meta2.
 	var numPtsParse, numPtsInsert int
 
 	readBlockSize := int(h.Config.ReadBlockSize)
+	rp := r.URL.Query().Get("rp")
 	for ctx.Read(readBlockSize) {
 		numPtsParse++
 		uw := influx.GetUnmarshalWork()
@@ -931,13 +953,17 @@ func (h *Handler) serveWrite(w http.ResponseWriter, r *http.Request, user meta2.
 			if atomic.LoadInt32(&syscontrol.LogRowsRuleSwitch) == 1 {
 				h.logRowsIfNecessary(rows, uw.ReqBuf)
 			}
-			if err = h.PointsWriter.RetryWritePointRows(db, r.URL.Query().Get("rp"), rows); err != nil {
+			if err = h.PointsWriter.RetryWritePointRows(db, rp, rows); err != nil {
 				ctx.ErrLock.Lock()
 				if ctx.CallbackErr == nil {
 					ctx.CallbackErr = err
 				}
 				ctx.ErrLock.Unlock()
 			} else {
+				if h.SubscriberManager != nil {
+					// uw.ReqBuf is the line protocal
+					h.SubscriberManager.Send(db, rp, uw.ReqBuf)
+				}
 				atomic.AddInt64(&statistics.HandlerStat.PointsWrittenOK, int64(len(rows)))
 			}
 			ctx.Wg.Done()
@@ -1115,6 +1141,12 @@ func (h *Handler) servePromWrite(w http.ResponseWriter, r *http.Request, user me
 	}(time.Now())
 	h.requestTracker.Add(r, user)
 
+	if syscontrol.DisableWrites {
+		h.httpError(w, `disable write!`, http.StatusForbidden)
+		h.Logger.Error("write is forbidden!", zap.Bool("DisableWrites", syscontrol.DisableWrites))
+		return
+	}
+
 	database := r.URL.Query().Get("db")
 	if database == "" {
 		h.httpError(w, "database is required", http.StatusBadRequest)
@@ -1231,6 +1263,11 @@ func (h *Handler) servePromWrite(w http.ResponseWriter, r *http.Request, user me
 // servePromRead will convert a Prometheus remote read request into a storage
 // query and returns data in Prometheus remote read protobuf format.
 func (h *Handler) servePromRead(w http.ResponseWriter, r *http.Request, user meta2.User) {
+	if syscontrol.DisableReads {
+		h.httpError(w, `disable read!`, http.StatusForbidden)
+		h.Logger.Error("read is forbidden!", zap.Bool("DisableReads", syscontrol.DisableReads))
+		return
+	}
 	//h.httpError(w, "not implementation", http.StatusBadRequest)
 	startTime := time.Now()
 	h.requestTracker.Add(r, user)
@@ -1433,7 +1470,13 @@ func (h *Handler) servePromRead(w http.ResponseWriter, r *http.Request, user met
 }
 
 func (h *Handler) serveFluxQuery(w http.ResponseWriter, r *http.Request, user meta2.User) {
+	if syscontrol.DisableReads {
+		h.httpError(w, `disable read!`, http.StatusForbidden)
+		h.Logger.Error("read is forbidden!", zap.Bool("DisableReads", syscontrol.DisableReads))
+		return
+	}
 	h.httpError(w, "not implementation", http.StatusBadRequest)
+
 }
 
 // serveExpvar serves internal metrics in /debug/vars format over HTTP.
@@ -1510,8 +1553,8 @@ func (h *Handler) httpError(w http.ResponseWriter, errmsg string, code int) {
 		w.Header().Set("X-InfluxDB-Error", errmsg[:int(sz)])
 	}
 
-	response := httpd.Response{Err: errors.New(errmsg)}
-	if rw, ok := w.(httpd.ResponseWriter); ok {
+	response := Response{Err: errors.New(errmsg)}
+	if rw, ok := w.(ResponseWriter); ok {
 		h.writeHeader(w, code)
 		rw.WriteResponse(response)
 		return
@@ -1805,7 +1848,7 @@ func (h *Handler) logging(inner http.Handler, name string) http.Handler {
 
 func (h *Handler) responseWriter(inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w = httpd.NewResponseWriter(w, r)
+		w = NewResponseWriter(w, r)
 		inner.ServeHTTP(w, r)
 	})
 }

@@ -18,6 +18,7 @@ package config
 
 import (
 	"errors"
+	"runtime"
 	"time"
 
 	"github.com/influxdata/influxdb/pkg/tlsconfig"
@@ -85,6 +86,8 @@ type TSSql struct {
 	Analysis   Castor           `toml:"castor"`
 	Sherlock   *SherlockConfig  `toml:"sherlock"`
 	SelectSpec SelectSpecConfig `toml:"spec-limit"`
+
+	Subscriber Subscriber `toml:"subscriber"`
 }
 
 // NewTSSql returns an instance of Config with reasonable defaults.
@@ -99,10 +102,14 @@ func NewTSSql() *TSSql {
 	c.Analysis = NewCastor()
 	c.Sherlock = NewSherlockConfig()
 	c.SelectSpec = NewSelectSpecConfig()
+	c.Subscriber = NewSubscriber()
 	return c
 }
 
 func (c *TSSql) Corrector(cpuNum int) {
+	if cpuNum == 0 {
+		cpuNum = runtime.NumCPU()
+	}
 	if c.HTTP.MaxConnectionLimit == 0 {
 		c.HTTP.MaxConnectionLimit = cpuNum * 125
 	}
@@ -143,6 +150,7 @@ func (c *TSSql) Validate() error {
 		c.Spdy,
 		c.Analysis,
 		c.Sherlock,
+		c.Subscriber,
 	}
 
 	for _, item := range items {

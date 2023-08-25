@@ -10,6 +10,8 @@ package metaclient
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1275,4 +1277,112 @@ func TestClient_RetryRegisterQueryIDOffset(t *testing.T) {
 			require.Equal(t, offset, tt.want)
 		})
 	}
+}
+
+func TestClient_ThermalShards(t *testing.T) {
+	type fields struct {
+		cacheData *meta2.Data
+	}
+
+	tests := []struct {
+		name   string
+		fields fields
+		start  time.Duration
+		end    time.Duration
+		want   map[uint64]struct{}
+	}{
+		{
+			name: "db not exist",
+			fields: fields{
+				cacheData: &meta2.Data{},
+			},
+			start: 0,
+			end:   0,
+			want:  nil,
+		},
+		{
+			name: "start end is zero",
+			fields: fields{
+				cacheData: &meta2.Data{
+					Databases: map[string]*meta2.DatabaseInfo{
+						"db0": {
+							RetentionPolicies: map[string]*meta2.RetentionPolicyInfo{
+								"rp0": {
+									ShardGroupDuration: time.Hour,
+								},
+							},
+						},
+					},
+				},
+			},
+			start: 0,
+			end:   0,
+			want:  map[uint64]struct{}{},
+		},
+		{
+			name: "start end not zero",
+			fields: fields{
+				cacheData: &meta2.Data{
+					Databases: map[string]*meta2.DatabaseInfo{
+						"db0": {
+							RetentionPolicies: map[string]*meta2.RetentionPolicyInfo{
+								"rp0": {
+									ShardGroups: []meta2.ShardGroupInfo{
+										{DeletedAt: time.Now()},                                            // deleted
+										{EndTime: time.Now().Add(-24 * time.Hour)},                         // ignore
+										{EndTime: time.Now(), Shards: []meta2.ShardInfo{{ID: 1}, {ID: 2}}}, // thermal shards
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			start: time.Hour,
+			end:   time.Hour,
+			want: map[uint64]struct{}{
+				1: {},
+				2: {},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{
+				cacheData: tt.fields.cacheData,
+				logger:    logger.NewLogger(errno.ModuleMetaClient),
+			}
+
+			result := c.ThermalShards("db0", tt.start, tt.end)
+			assert.Equal(t, result, tt.want)
+		})
+	}
+}
+
+func TestClient_CreateSubscription(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))
+	server1 := httptest.NewServer(mux)
+	defer server1.Close()
+	server2 := httptest.NewServer(mux)
+	defer server2.Close()
+
+	c := &Client{
+		cacheData: &meta2.Data{
+			Databases: map[string]*meta2.DatabaseInfo{"db0": {
+				Name: "db0",
+				RetentionPolicies: map[string]*meta2.RetentionPolicyInfo{
+					"rp0": {
+						Name:     "rp0",
+						Duration: 72 * time.Hour,
+					},
+				}}},
+		},
+		metaServers: []string{"127.0.0.1:8092"},
+		logger:      logger.NewLogger(errno.ModuleMetaClient).With(zap.String("service", "metaclient")),
+	}
+	destinations := []string{server1.URL, server2.URL}
+	err := c.CreateSubscription("db0", "rp0", "subs1", "ALL", destinations)
+	require.EqualError(t, err, "execute command timeout")
 }

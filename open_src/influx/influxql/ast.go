@@ -3501,6 +3501,13 @@ type DropSubscriptionStatement struct {
 
 // String returns a string representation of the DropSubscriptionStatement.
 func (s *DropSubscriptionStatement) String() string {
+	if s.Name == "" {
+		if s.Database == "" {
+			return "DROP ALL SUBSCRIPTIONS"
+		} else {
+			return fmt.Sprintf(`DROP ALL SUBSCRIPTIONS ON %s`, QuoteIdent(s.Database))
+		}
+	}
 	return fmt.Sprintf(`DROP SUBSCRIPTION %s ON %s.%s`, QuoteIdent(s.Name), QuoteIdent(s.Database), QuoteIdent(s.RetentionPolicy))
 }
 
@@ -7188,5 +7195,31 @@ func (s *ShowMeasurementKeysStatement) String() string {
 	_, _ = buf.WriteString("Show Measurement ")
 	_, _ = buf.WriteString(QuoteIdent(s.Name))
 
+	return buf.String()
+}
+
+type SetConfigStatement struct {
+	Component string
+	Key       string
+	Value     interface{}
+}
+
+func (s *SetConfigStatement) stmt() {}
+
+func (s *SetConfigStatement) node() {}
+
+func (s *SetConfigStatement) RequiredPrivileges() (ExecutionPrivileges, error) {
+	return ExecutionPrivileges{{Admin: true, Name: "", Rwuser: true, Privilege: AllPrivileges}}, nil
+}
+
+func (s *SetConfigStatement) String() string {
+	var buf bytes.Buffer
+
+	if _, ok := s.Value.(string); ok {
+		_, _ = buf.WriteString(fmt.Sprintf(`SET CONFIG %s "%s" = "%s"`, s.Component, s.Key, s.Value))
+	} else {
+		_, _ = buf.WriteString(fmt.Sprintf(`SET CONFIG %s "%s" = %v`, s.Component, s.Key, s.Value))
+
+	}
 	return buf.String()
 }

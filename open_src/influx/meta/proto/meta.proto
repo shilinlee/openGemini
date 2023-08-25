@@ -46,6 +46,7 @@ message Data {
 	optional uint64 MaxConnId = 26;
 	map<string,uint64> QueryIDInit = 27;
 	map<string, Replications> ReplicaGroups = 28;
+	optional uint64 MaxSubscriptionID = 29;
 }
 
 message Replications {

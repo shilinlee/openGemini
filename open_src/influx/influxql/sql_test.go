@@ -152,6 +152,23 @@ func init() {
 		"drop downsamples",
 		"show downsamples on db",
 		"show downsamples",
+		"create subscription subs0 on db0.autogen destinations all \"127.0.0.1:1000\", \"127.0.0.1:1001\"",
+		"create subscription subs0 on db0 destinations any \"127.0.0.1:1000\", \"127.0.0.1:1001\"",
+		"SHOW SUBSCRIPTIONS",
+		"DROP ALL SUBSCRIPTIONS",
+		"DROP ALL SUBSCRIPTIONS on db0",
+		"DROP SUBSCRIPTION subs0 on db0.autogen",
+		"DROP SUBSCRIPTION subs0 on db0",
+
+		// set config
+		`SET CONFIG store "data.write-cold-duration" = aa`,
+		`SET CONFIG store 'data.write-cold-duration' = "1s"`,
+		`SET CONFIG store "data.max-concurrent-compactions" = 4`,
+		`SET CONFIG store "data.max-concurrent-compactions" = 4.1`,
+		`SET CONFIG store "retention.check-interval" = "5m"`,
+		`SET CONFIG meta logging.level = info`,
+		`SET CONFIG store "data.compact-recovery" = false`,
+		`SET CONFIG store "data.compact-recovery" = true`,
 	}
 
 	benchCases = []string{

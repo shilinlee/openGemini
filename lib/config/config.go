@@ -51,9 +51,12 @@ const (
 	AppMonitor App = "monitor"
 	AppData    App = "data"
 	Unknown    App = "unKnown"
+
+	DefaultCpuAllocationRatio = 1
 )
 
 var haEnable bool
+var subscriptionEnable bool
 
 func SetHaEnable(en bool) {
 	haEnable = en
@@ -61,6 +64,14 @@ func SetHaEnable(en bool) {
 
 func GetHaEnable() bool {
 	return haEnable
+}
+
+func SetSubscriptionEnable(en bool) {
+	subscriptionEnable = en
+}
+
+func GetSubscriptionEnable() bool {
+	return subscriptionEnable
 }
 
 func Parse(conf Config, path string) error {
@@ -99,19 +110,23 @@ type Common struct {
 	CryptoConfig   string   `toml:"crypto-config"`
 	ClusterID      string   `toml:"cluster-id"`
 	CPUNum         int      `toml:"cpu-num"`
+	ReaderStop     bool     `toml:"read-stop"`
+	WriterStop     bool     `toml:"write-stop"`
 
-	MemorySize      itoml.Size     `toml:"memory-size"`
-	MemoryLimitSize itoml.Size     `toml:"executor-memory-size-limit"`
-	MemoryWaitTime  itoml.Duration `toml:"executor-memory-wait-time"`
-	OptHashAlgo     string         `toml:"select-hash-algorithm"`
+	MemorySize         itoml.Size     `toml:"memory-size"`
+	MemoryLimitSize    itoml.Size     `toml:"executor-memory-size-limit"`
+	MemoryWaitTime     itoml.Duration `toml:"executor-memory-wait-time"`
+	OptHashAlgo        string         `toml:"select-hash-algorithm"`
+	CpuAllocationRatio int            `toml:"cpu-allocation-ratio"`
 }
 
 // NewCommon builds a new CommonConfiguration with default values.
 func NewCommon() *Common {
 	return &Common{
-		MetaJoin:     DefaultMetaJoin,
-		ReportEnable: true,
-		OptHashAlgo:  DefaultHashAlgo,
+		MetaJoin:           DefaultMetaJoin,
+		ReportEnable:       true,
+		OptHashAlgo:        DefaultHashAlgo,
+		CpuAllocationRatio: DefaultCpuAllocationRatio,
 	}
 }
 
