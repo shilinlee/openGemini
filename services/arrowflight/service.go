@@ -35,6 +35,7 @@ import (
 	"github.com/influxdata/influxdb/models"
 	"github.com/influxdata/influxql"
 	"github.com/openGemini/openGemini/coordinator"
+	config2 "github.com/openGemini/openGemini/lib/config"
 	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/logger"
 	"github.com/openGemini/openGemini/lib/statisticsPusher"
@@ -86,14 +87,12 @@ type Service struct {
 	RecordWriter interface {
 		RetryWriteRecord(database, retentionPolicy, measurement string, rec array.Record) error
 	}
-
-	// todo: 初始化
-	SubscriberManager *coordinator.SubscriberManager
 }
 
 func NewService(c config.Config) (*Service, error) {
 	sLogger := logger.NewLogger(errno.ModuleHTTP)
-	writer := NewWriteServer(sLogger)
+	writer := NewWriteServer()
+	writer.WithLogger(sLogger)
 	authHandler := NewAuthServer(c.FlightAuthEnabled)
 	server := flight.NewServerWithMiddleware(authHandler, nil, grpc.MaxRecvMsgSize(c.MaxBodySize))
 	if err := server.Init(c.FlightAddress); err != nil {
@@ -110,6 +109,10 @@ func NewService(c config.Config) (*Service, error) {
 		Logger:      sLogger,
 		Config:      &c,
 	}, nil
+}
+
+func (s *Service) WithSubscriber(config *config2.Subscriber, metaclient coordinator.MetaClient) {
+	s.writer.WithSubscriber(config, metaclient)
 }
 
 func (s *Service) Open() error {
@@ -259,17 +262,25 @@ type writeServer struct {
 	logger  *logger.Logger
 	service *flight.FlightServiceService
 	// todo: 初始化
-	subscriberManager coordinator.SubscriberManager
+	subscriberManager *coordinator.SubscriberManager
 }
 
-func NewWriteServer(logger *logger.Logger) *writeServer {
+func NewWriteServer() *writeServer {
 	writer := &writeServer{
 		mem:     memory.NewGoAllocator(),
-		logger:  logger,
 		service: &flight.FlightServiceService{},
 	}
 	writer.service.DoPut = writer.DoPut
 	return writer
+}
+
+func (w *writeServer) WithLogger(log *logger.Logger) {
+	w.logger = log
+}
+
+func (w *writeServer) WithSubscriber(config *config2.Subscriber, metaclient coordinator.MetaClient) {
+	w.subscriberManager = coordinator.NewSubscriberManager(config, metaclient)
+	w.subscriberManager.WithLogger(w.logger)
 }
 
 func (w *writeServer) SetWriter(writer RecordWriter) {
@@ -306,7 +317,9 @@ func (w *writeServer) DoPut(server flight.FlightService_DoPutServer) error {
 		if err != nil {
 			return err
 		}
-		w.subscriberManager.SendColumn(metaData.DataBase, metaData.RetentionPolicy, metaData.Measurement, r)
+		if w.subscriberManager != nil {
+			w.subscriberManager.SendColumn(metaData.DataBase, metaData.RetentionPolicy, metaData.Measurement, r)
+		}
 		err = server.Send(&flight.PutResult{})
 		if err != nil {
 			return err

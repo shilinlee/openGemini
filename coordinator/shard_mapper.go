@@ -258,7 +258,7 @@ func (csm *ClusterShardMapping) getSchema(database string, retentionPolicy strin
 					panic(err)
 				}
 			} else {
-				csm.Logger.Warn("get field schema failed from metaClient", zap.String("database", database),
+				csm.Logger.Warn("get field schema failed from metaclient", zap.String("database", database),
 					zap.String("measurement", mst), zap.Any("err", err), zap.String("shardMapping", "cluster"))
 				return nil, nil, fmt.Errorf("get schema failed")
 			}

@@ -94,7 +94,7 @@ func main() {
 
 	data := MockArrowRecord(5)
 	wr := flight.NewRecordWriter(doPutClient, ipc.WithSchema(data.Schema()))
-	wr.SetFlightDescriptor(&flight.FlightDescriptor{Path: []string{"{\"db\": \"db1\", \"rp\": \"autogen\", \"mst\": \"mst1\"}"}})
+	wr.SetFlightDescriptor(&flight.FlightDescriptor{Path: []string{`{"db": "db0", "rp": "", "mst": "mst1"}`}})
 
 	for i := 0; i < 3; i++ {
 		if err = wr.Write(data); err != nil {

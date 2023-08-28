@@ -129,7 +129,8 @@ func NewServer(conf config.Config, info app.ServerInfo, logger *Logger.Logger) (
 	coordinator.SetTagLimit(c.Coordinator.TagLimit)
 
 	if s.config.Subscriber.Enabled {
-		s.SubscriberManager = coordinator.NewSubscriberManager(s.config.Subscriber, s.MetaClient, s.httpService.Handler.Logger)
+		s.SubscriberManager = coordinator.NewSubscriberManager(&s.config.Subscriber, s.MetaClient)
+		s.SubscriberManager.WithLogger(s.httpService.Handler.Logger)
 	}
 	config.SetSubscriptionEnable(s.config.Subscriber.Enabled)
 
@@ -152,6 +153,9 @@ func NewServer(conf config.Config, info app.ServerInfo, logger *Logger.Logger) (
 	if c.HTTP.FlightEnabled {
 		if err = s.initArrowFlightService(c); err != nil {
 			return nil, err
+		}
+		if c.Subscriber.Enabled {
+			s.arrowFlightService.WithSubscriber(&c.Subscriber, s.MetaClient)
 		}
 	}
 
@@ -185,11 +189,6 @@ func (s *Server) initArrowFlightService(c *config.TSSql) error {
 	s.arrowFlightService.StatisticsPusher = s.statisticsPusher
 	s.RecordWriter = coordinator.NewRecordWriter(time.Duration(c.Coordinator.ShardWriterTimeout), int(c.Meta.PtNumPerNode), c.HTTP.FlightChFactor)
 	s.RecordWriter.StorageEngine = services.GetStorageEngine()
-
-	//可以在这里进行s.SubscriberManager和s.arrowFlightService.SubscriberManager的初始化，
-	//但是这样就需要新构建一个SubscriberManager出来，
-	//应该考虑把SubscriberManager搞成单例，
-	//行协议和列协议复用同一个SubscriberManager
 	return nil
 }
 

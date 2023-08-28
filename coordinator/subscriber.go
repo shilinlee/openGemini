@@ -83,7 +83,7 @@ func (c *HTTPClient) Send(db, rp string, lineProtocol []byte) error {
 }
 
 func (c *HTTPClient) SendColumn(db, rp, mst string, record array.Record) error {
-	return errors.New("http client dosen't send column")
+	return errors.New("http metaclient dosen't send column")
 }
 
 func (c *HTTPClient) Destination() string {
@@ -128,19 +128,28 @@ type RPCClient struct {
 	// todo
 	address string
 	client  flight.FlightService_DoPutClient
+
+	//  flightWriter only can new instance once
+	once sync.Once
+	// flightWriter is to write record entrypoint
+	flightWriter *flight.Writer
 }
 
 func (c *RPCClient) Send(db, rp string, lineProtocol []byte) error {
-	return errors.New("rpc client dosen't send line protocol")
+	return errors.New("rpc metaclient dosen't send line protocol")
 }
 
 func (c *RPCClient) SendColumn(db, rp, mst string, record array.Record) error {
-	wr := flight.NewRecordWriter(c.client, ipc.WithSchema(record.Schema()))
-	// err未处理
-	defer wr.Close()
-	path := fmt.Sprintf("{\"db\": \"%s\", \"rp\": \"%s\", \"mst\": \"%s\"}", db, rp, mst)
-	wr.SetFlightDescriptor(&flight.FlightDescriptor{Path: []string{path}})
-	err := wr.Write(record)
+	c.once.Do(
+		func() {
+			c.flightWriter = flight.NewRecordWriter(c.client, ipc.WithSchema(record.Schema()))
+			path := fmt.Sprintf(`{"db": "%s", "rp": "%s", "mst": "%s"}`, db, rp, mst)
+			c.flightWriter.SetFlightDescriptor(&flight.FlightDescriptor{Path: []string{path}})
+		},
+	)
+	defer record.Release()
+	record.Retain()
+	err := c.flightWriter.Write(record)
 	if err != nil {
 		return err
 	}
@@ -174,9 +183,21 @@ func (a *clientAuth) GetToken(_ context.Context) (string, error) {
 
 func NewRPCClient(address string) (*RPCClient, error) {
 	// todo 错误检查, 后续这些client需要关闭
+	conn, err := grpc.Dial(address, grpc.WithInsecure())
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err = conn.Close(); err != nil {
+			panic("Flight Close failed" + err.Error())
+		}
+	}()
 	authClient := &clientAuth{}
 	client, _ := flight.NewFlightClient(address, authClient, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	doPutClient, _ := client.DoPut(context.Background())
+	doPutClient, err := client.DoPut(context.Background())
+	if err != nil {
+		fmt.Println(err)
+	}
 	return &RPCClient{address: address, client: doPutClient}, nil
 }
 
@@ -299,13 +320,48 @@ type MetaClient interface {
 	WaitForDataChanged() chan struct{}
 }
 
+var GlobalSubscriberManager *SubscriberManager
+var globalSubscriberManagerOnce sync.Once
+
 type SubscriberManager struct {
-	lock           sync.RWMutex
-	writers        map[string]map[string][]SubscriberWriter // {"db0": {"rp0": []SubscriberWriter }}
-	client         MetaClient
-	config         config.Subscriber
-	Logger         *logger.Logger
+	// lock for instance SubscriberManager
+	lock sync.RWMutex
+
+	// manage all subscriber writers
+	// each database and retention policy has more than one subscribe task
+	// e.g. {"db0": {"rp0": []SubscriberWriter }}
+	writers map[string]map[string][]SubscriberWriter
+
+	// connect to meta by metaclient
+	metaclient MetaClient
+
+	// global Subscriber configuration
+	config *config.Subscriber
+
+	Logger *logger.Logger
+
+	// sensing whether the subscription task has changed
 	lastModifiedID uint64
+}
+
+// NewSubscriberManager returns one new SubscriberManager instance.
+// The line protocol and column protocol share this global instance SubscriberManager.
+func NewSubscriberManager(config *config.Subscriber, metaclient MetaClient) *SubscriberManager {
+	globalSubscriberManagerOnce.Do(
+		func() {
+			GlobalSubscriberManager = &SubscriberManager{
+				writers:    make(map[string]map[string][]SubscriberWriter),
+				metaclient: metaclient,
+				config:     config,
+			}
+		},
+	)
+
+	return GlobalSubscriberManager
+}
+
+func (s *SubscriberManager) WithLogger(l *logger.Logger) {
+	s.Logger = l
 }
 
 func (s *SubscriberManager) NewSubscriberWriter(db, rp, name, mode string, destinations []string) (SubscriberWriter, error) {
@@ -367,11 +423,11 @@ func (s *SubscriberManager) InitWriters() {
 			s.writers[dbi.Name][rpi.Name] = writers
 		})
 	})
-	s.lastModifiedID = s.client.GetMaxSubscriptionID()
+	s.lastModifiedID = s.metaclient.GetMaxSubscriptionID()
 }
 
 func (s *SubscriberManager) WalkDatabases(fn func(db *meta.DatabaseInfo)) {
-	dbs := s.client.Databases()
+	dbs := s.metaclient.Databases()
 	for _, dbi := range dbs {
 		fn(dbi)
 	}
@@ -450,7 +506,7 @@ func (s *SubscriberManager) Send(db, rp string, lineProtocol []byte) {
 	}
 
 	if rp == "" {
-		dbi, err := s.client.Database(db)
+		dbi, err := s.metaclient.Database(db)
 		if err != nil {
 			s.Logger.Error("unknown database", zap.String("db", db))
 		} else {
@@ -467,7 +523,7 @@ func (s *SubscriberManager) Send(db, rp string, lineProtocol []byte) {
 
 func (s *SubscriberManager) SendColumn(db, rp, mst string, record array.Record) {
 	if rp == "" {
-		dbi, err := s.client.Database(db)
+		dbi, err := s.metaclient.Database(db)
 		if err != nil {
 			s.Logger.Error("unknown database", zap.String("db", db))
 		} else {
@@ -497,19 +553,12 @@ func (s *SubscriberManager) StopAllWriters() {
 
 func (s *SubscriberManager) Update() {
 	for {
-		ch := s.client.WaitForDataChanged()
+		ch := s.metaclient.WaitForDataChanged()
 		<-ch
-		maxSubscriptionID := s.client.GetMaxSubscriptionID()
+		maxSubscriptionID := s.metaclient.GetMaxSubscriptionID()
 		if maxSubscriptionID > s.lastModifiedID {
 			s.UpdateWriters()
 			s.lastModifiedID = maxSubscriptionID
 		}
 	}
-}
-
-func NewSubscriberManager(c config.Subscriber, m MetaClient, l *logger.Logger) *SubscriberManager {
-	m.Databases()
-	s := &SubscriberManager{client: m, config: c, Logger: l}
-	s.writers = make(map[string]map[string][]SubscriberWriter)
-	return s
 }

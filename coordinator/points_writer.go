@@ -193,7 +193,7 @@ func fixFields(fields influx.Fields) (influx.Fields, error) {
 	return fields, nil
 }
 
-// RetryWritePointRows make sure sql client got the latest metadata.
+// RetryWritePointRows make sure sql metaclient got the latest metadata.
 func (w *PointsWriter) RetryWritePointRows(database, retentionPolicy string, rows []influx.Row) error {
 	var err error
 	start := time.Now()

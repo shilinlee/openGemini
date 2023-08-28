@@ -2248,14 +2248,14 @@ func pingServer(server string) error {
 
 // CreateSubscription creates a subscription against the given database and retention policy.
 func (c *Client) CreateSubscription(database, rp, name, mode string, destinations []string) error {
-	for _, destination := range destinations {
-		if err := validateURL(destination); err != nil {
-			return fmt.Errorf("invalid url %s", destination)
-		}
-		if err := pingServer(destination); err != nil {
-			return fmt.Errorf("fail to ping %s", destination)
-		}
-	}
+	//for _, destination := range destinations {
+	//if err := validateURL(destination); err != nil {
+	//	return fmt.Errorf("invalid url %s", destination)
+	//}
+	//if err := pingServer(destination); err != nil {
+	//	return fmt.Errorf("fail to ping %s", destination)
+	//}
+	//}
 	return c.retryUntilExec(proto2.Command_CreateSubscriptionCommand, proto2.E_CreateSubscriptionCommand_Command,
 		&proto2.CreateSubscriptionCommand{
 			Database:        proto.String(database),
