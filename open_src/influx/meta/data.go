@@ -2938,8 +2938,7 @@ func ValidMeasurementName(name string) bool {
 	if name == "." || name == ".." {
 		return false
 	}
-
-	return validName(name, `,:;/\`)
+	return validName(name, `,;/\`)
 }
 
 func validName(name string, charactersNotSupport string) bool {
