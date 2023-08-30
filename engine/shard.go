@@ -370,7 +370,8 @@ type Shard interface {
 	NewShardKeyIdx(shardType, dataPath string, lockPath *string) error
 
 	// admin
-	Open(client metaclient.MetaClient) error
+	OpenAndEnable(client metaclient.MetaClient) error
+	IsOpened() bool
 	Close() error
 	ChangeShardTierToWarm()
 	DropMeasurement(ctx context.Context, name string) error
@@ -414,7 +415,6 @@ type Shard interface {
 
 	// compaction && merge, only work for tsstore
 	Compact() error
-	CompactionEnabled() bool
 	DisableCompAndMerge()
 	EnableCompAndMerge()
 }
@@ -430,6 +430,8 @@ type shard struct {
 	walPath   string
 	lock      *string
 	ident     *meta.ShardIdentifier
+
+	opened bool // is shard opened
 
 	cacheClosed        int32
 	isAsyncReplayWal   bool               // async replay wal switch
@@ -771,10 +773,6 @@ func (s *shard) shouldSnapshot() bool {
 	return false
 }
 
-func (s *shard) CompactionEnabled() bool {
-	return s.immTables.CompactionEnabled()
-}
-
 func (s *shard) DisableCompAndMerge() {
 	s.immTables.DisableCompAndMerge()
 }
@@ -853,12 +851,12 @@ func (mw *mstWriteCtx) getMstMap() *dictpool.Dict {
 	return &mw.mstMap
 }
 
-func (mw *mstWriteCtx) getRowsPool() []influx.Row {
+func (mw *mstWriteCtx) getRowsPool() *[]influx.Row {
 	v := mw.rowsPool.Get()
 	if v == nil {
-		return []influx.Row{}
+		return &[]influx.Row{}
 	}
-	rp := v.([]influx.Row)
+	rp := v.(*[]influx.Row)
 
 	return rp
 }
@@ -870,13 +868,11 @@ func (mw *mstWriteCtx) initWriteRowsCtx(getLastFlushTime func(msName string, sid
 	mw.writeRowsCtx.MstsInfo = mstsInfo
 }
 
-// nolint
-func (mw *mstWriteCtx) putRowsPool(rp []influx.Row) {
-	for i := range rp {
-		rp[i].Reset()
+func (mw *mstWriteCtx) putRowsPool(rp *[]influx.Row) {
+	for i := range *rp {
+		(*rp)[i].Reset()
 	}
-	rp = rp[:0]
-	//lint:ignore SA6002 argument should be pointer-like to avoid allocations
+	*rp = (*rp)[:0]
 	mw.rowsPool.Put(rp)
 }
 
@@ -909,7 +905,7 @@ func putMstWriteCtx(mw *mstWriteCtx) {
 		if !ok {
 			panic("can't map mmPoints")
 		}
-		mw.putRowsPool(*rows)
+		mw.putRowsPool(rows)
 	}
 
 	if !mw.timer.Stop() {
@@ -1008,7 +1004,7 @@ func calculateMemSize(rows influx.Rows) int64 {
 func cloneRowToDict(mmPoints *dictpool.Dict, mw *mstWriteCtx, row *influx.Row) *influx.Row {
 	if !mmPoints.Has(row.Name) {
 		rp := mw.getRowsPool()
-		mmPoints.Set(row.Name, &rp)
+		mmPoints.Set(row.Name, rp)
 	}
 	rowsPool := mmPoints.Get(row.Name)
 	rp, _ := rowsPool.(*[]influx.Row)
@@ -1422,8 +1418,6 @@ func (s *shard) Open(client metaclient.MetaClient) error {
 		return e
 	}
 	statistics.ShardStepDuration(s.GetID(), s.opId, "RecoverDownSample", time.Since(start).Nanoseconds(), false)
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.immTables.SetOpId(s.GetID(), s.opId)
 	maxTime, err := s.immTables.Open()
 	if err != nil {
@@ -1436,6 +1430,10 @@ func (s *shard) Open(client metaclient.MetaClient) error {
 
 	s.initSeriesLimiter(s.seriesLimit)
 	return nil
+}
+
+func (s *shard) IsOpened() bool {
+	return s.opened
 }
 
 func (s *shard) removeFile(logFile string) error {
@@ -1476,9 +1474,7 @@ func (s *shard) DownSampleRecover(client metaclient.MetaClient) error {
 				}
 				continue
 			}
-			s.mu.Lock()
 			err = s.DownSampleRecoverReplaceFiles(logInfo, shardDir)
-			s.mu.Unlock()
 			if err != nil {
 				return err
 			}
@@ -1601,8 +1597,18 @@ func readDownSampleLogFile(name string, info *DownSampleFilesInfo) error {
 }
 
 func (s *shard) OpenAndEnable(client metaclient.MetaClient) error {
-	var err error
-	err = s.Open(client)
+	if s.IsOpened() {
+		return nil
+	}
+
+	// shard can open and enable only once.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.IsOpened() {
+		return nil
+	}
+
+	err := s.Open(client)
 	if err != nil {
 		return err
 	}
@@ -1626,6 +1632,7 @@ func (s *shard) OpenAndEnable(client metaclient.MetaClient) error {
 	s.EnableDownSample()
 	s.wg.Add(1)
 	go s.Snapshot()
+	s.opened = true
 	return nil
 }
 

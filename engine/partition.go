@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
+	"github.com/openGemini/openGemini/app/ts-meta/meta/message"
 	"github.com/openGemini/openGemini/engine/immutable"
 	"github.com/openGemini/openGemini/engine/immutable/colstore"
 	"github.com/openGemini/openGemini/engine/index/sparseindex"
@@ -55,24 +56,9 @@ var (
 type PtNNLock struct {
 }
 
-//lint:ignore U1000 use for replication feature
-type PeerInfo struct {
-	ptId   uint32
-	nodeId uint64
-}
-
-//lint:ignore U1000 use for replication feature
-type ReplicaInfo struct {
-	replicaRole   meta.Role
-	master        PeerInfo
-	peers         []PeerInfo
-	replicaStatus meta.RGStatus
-	term          uint64
-}
-
 type DBPTInfo struct {
 	//lint:ignore U1000 use for replication feature
-	replicaInfo *ReplicaInfo
+	replicaInfo *message.ReplicaInfo
 
 	mu       sync.RWMutex
 	database string
@@ -463,6 +449,15 @@ func parseShardDir(shardDirName string) (uint64, uint64, *meta.TimeRangeInfo, er
 	return shardID, indexID, tr, nil
 }
 
+func (dbPT *DBPTInfo) thermalShards(client metaclient.MetaClient) map[uint64]struct{} {
+	if dbPT.opt.LazyLoadShardEnable {
+		start := dbPT.opt.ThermalShardStartDuration
+		end := dbPT.opt.ThermalShardEndDuration
+		return client.ThermalShards(dbPT.database, start, end)
+	}
+	return nil
+}
+
 type res struct {
 	s   Shard
 	err error
@@ -478,6 +473,8 @@ func (dbPT *DBPTInfo) OpenShards(opId uint64, rp string, durationInfos map[uint6
 		return err
 	}
 
+	thermalShards := dbPT.thermalShards(client)
+
 	resC := make(chan *res, len(shardDirs)-1)
 	n := 0
 	for shIdx := range shardDirs {
@@ -486,7 +483,7 @@ func (dbPT *DBPTInfo) OpenShards(opId uint64, rp string, durationInfos map[uint6
 		}
 		n++
 		openShardsLimit <- struct{}{}
-		go dbPT.openShard(opId, shardDirs[shIdx].Name(), rp, durationInfos, resC, loadStat, client)
+		go dbPT.openShard(opId, thermalShards, shardDirs[shIdx].Name(), rp, durationInfos, resC, loadStat, client)
 	}
 
 	err = dbPT.ptReceiveShard(resC, n, rp)
@@ -494,7 +491,7 @@ func (dbPT *DBPTInfo) OpenShards(opId uint64, rp string, durationInfos map[uint6
 	return err
 }
 
-func (dbPT *DBPTInfo) openShard(opId uint64, shardDirName, rp string, durationInfos map[uint64]*meta.ShardDurationInfo,
+func (dbPT *DBPTInfo) openShard(opId uint64, thermalShards map[uint64]struct{}, shardDirName, rp string, durationInfos map[uint64]*meta.ShardDurationInfo,
 	resC chan *res, loadStat int, client metaclient.MetaClient) {
 	defer func() {
 		openShardsLimit.Release()
@@ -518,9 +515,9 @@ func (dbPT *DBPTInfo) openShard(opId uint64, shardDirName, rp string, durationIn
 
 	var sh *shard
 	if loadStat == immutable.LOAD {
-		sh, err = dbPT.loadProcess(opId, shardPath, shardWalPath, indexID, shardId, durationInfos, tr, client)
+		sh, err = dbPT.loadProcess(opId, thermalShards, shardPath, shardWalPath, indexID, shardId, durationInfos, tr, client)
 	} else {
-		sh, err = dbPT.preloadProcess(opId, shardPath, shardWalPath, shardId, durationInfos, tr, client)
+		sh, err = dbPT.preloadProcess(opId, thermalShards, shardPath, shardWalPath, shardId, durationInfos, tr, client)
 	}
 	sendShardResult(sh, err, resC)
 }
@@ -533,7 +530,7 @@ func sendShardResult(sh *shard, err error, resC chan *res) {
 	}
 }
 
-func (dbPT *DBPTInfo) preloadProcess(opId uint64, shardPath, shardWalPath string, shardId uint64, durationInfos map[uint64]*meta.ShardDurationInfo,
+func (dbPT *DBPTInfo) preloadProcess(opId uint64, thermalShards map[uint64]struct{}, shardPath, shardWalPath string, shardId uint64, durationInfos map[uint64]*meta.ShardDurationInfo,
 	tr *meta.TimeRangeInfo, client metaclient.MetaClient) (*shard, error) {
 
 	engineType := config.EngineType(durationInfos[shardId].Ident.EngineType)
@@ -544,16 +541,25 @@ func (dbPT *DBPTInfo) preloadProcess(opId uint64, shardPath, shardWalPath string
 
 	start := time.Now()
 	statistics.ShardTaskInit(sh.opId, sh.GetIdent().OwnerDb, sh.GetIdent().OwnerPt, sh.GetRPName(), sh.GetID())
-	if err := sh.Open(client); err != nil {
-		statistics.ShardStepDuration(sh.GetID(), sh.opId, "ShardOpenErr", time.Since(start).Nanoseconds(), true)
-		_ = sh.Close()
-		return nil, err
+
+	if _, ok := thermalShards[sh.ident.ShardID]; ok || !dbPT.opt.LazyLoadShardEnable {
+		sh.mu.Lock()
+		if err := sh.Open(client); err != nil {
+			sh.mu.Unlock()
+			statistics.ShardStepDuration(sh.GetID(), sh.opId, "ShardOpenErr", time.Since(start).Nanoseconds(), true)
+			_ = sh.Close()
+			return nil, err
+		}
+		sh.mu.Unlock()
+		statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardOpenDone", 0, true)
+	} else {
+		statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardSkipOpen", 0, true)
+		dbPT.logger.Info("skipping open shard for preload", zap.String("path", shardPath))
 	}
-	statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardOpenDone", 0, true)
 	return sh, nil
 }
 
-func (dbPT *DBPTInfo) loadProcess(opId uint64, shardPath, shardWalPath string, indexID, shardId uint64,
+func (dbPT *DBPTInfo) loadProcess(opId uint64, thermalShards map[uint64]struct{}, shardPath, shardWalPath string, indexID, shardId uint64,
 	durationInfos map[uint64]*meta.ShardDurationInfo, tr *meta.TimeRangeInfo, client metaclient.MetaClient) (*shard, error) {
 	i, err := dbPT.getShardIndex(indexID, durationInfos[shardId].DurationInfo.Duration)
 	if err != nil {
@@ -598,11 +604,16 @@ func (dbPT *DBPTInfo) loadProcess(opId uint64, shardPath, shardWalPath string, i
 		sh.sparseIndexReader = sparseindex.NewIndexReader(colstore.RowsNumPerFragment, colstore.CoarseIndexFragment, colstore.MinRowsForSeek)
 	}
 
-	if err = sh.OpenAndEnable(client); err != nil {
-		statistics.ShardStepDuration(sh.GetID(), sh.opId, "ShardOpenErr", time.Since(start).Nanoseconds(), true)
-		return nil, err
+	if _, ok = thermalShards[sh.ident.ShardID]; ok || !dbPT.opt.LazyLoadShardEnable {
+		if err = sh.OpenAndEnable(client); err != nil {
+			statistics.ShardStepDuration(sh.GetID(), sh.opId, "ShardOpenErr", time.Since(start).Nanoseconds(), true)
+			return nil, err
+		}
+		statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardOpenAndEnableDone", 0, true)
+	} else {
+		statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardSkipOpen", 0, true)
+		dbPT.logger.Info("skipping open shard for load", zap.String("path", shardPath))
 	}
-	statistics.ShardStepDuration(sh.GetID(), sh.opId, "shardOpenAndEnableDone", 0, true)
 
 	return sh, nil
 }
@@ -641,6 +652,13 @@ func (dbPT *DBPTInfo) ptReceiveShard(resC chan *res, n int, rp string) error {
 
 func (dbPT *DBPTInfo) SetOption(opt netstorage.EngineOptions) {
 	dbPT.opt = opt
+}
+
+func (dbPT *DBPTInfo) SetParams(preload bool, lockPath *string, enableTagArray bool) {
+	dbPT.unload = make(chan struct{})
+	dbPT.preload = preload
+	dbPT.lockPath = lockPath
+	dbPT.enableTagArray = enableTagArray
 }
 
 func (dbPT *DBPTInfo) NewShard(rp string, shardID uint64, timeRangeInfo *meta.ShardTimeRangeInfo, client metaclient.MetaClient, engineType config.EngineType) (Shard, error) {
@@ -710,7 +728,9 @@ func (dbPT *DBPTInfo) NewShard(rp string, shardID uint64, timeRangeInfo *meta.Sh
 		return nil, err
 	}
 	if !dbPT.bgrEnabled {
+		sh.mu.Lock()
 		err = sh.Open(client)
+		sh.mu.Unlock()
 	} else {
 		err = sh.OpenAndEnable(client)
 	}

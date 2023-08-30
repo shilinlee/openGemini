@@ -156,7 +156,7 @@ func GenDataRecord(msNames []string, seriesNum, pointNumOfPerSeries int, interva
 			j++
 		}
 
-		sort.Sort(r.Fields)
+		sort.Sort(&r.Fields)
 
 		vInt++
 		vFloat += 1.1
@@ -307,7 +307,7 @@ func writeData(sh *shard, rs []influx.Row, forceFlush bool) error {
 	}
 
 	for i := range rs {
-		sort.Sort(rs[i].Fields)
+		sort.Sort(&rs[i].Fields)
 	}
 
 	err = sh.WriteRows(rs, buff)
@@ -2288,6 +2288,14 @@ func TestQueryOnlyInImmutableWithLimitWithGroupBy(t *testing.T) {
 							// key is indexKey, value is Record
 							m := genExpectRecordsMap(rows, querySchema)
 							errs := make(chan error, len(cursors))
+							childPlan := executor.NewLogicalSeries(querySchema)
+							plan := executor.NewLogicalMerge([]hybridqp.QueryNode{childPlan}, querySchema)
+							for _, g := range cursors {
+								group := g.(*groupCursor)
+								for _, ts := range group.tagSetCursors {
+									ts.(*tagSetCursor).lazyTagSetCursorPara.plan = plan
+								}
+							}
 							checkQueryResultParallel(errs, cursors, m, ascending, f)
 							close(errs)
 							for i := 0; i < len(cursors); i++ {
@@ -3256,14 +3264,13 @@ func TestEngine_GetShard(t *testing.T) {
 		_ = eng.Close()
 	}()
 
-	sh := eng.GetShard("db0", uint32(0), uint64(1))
-	if sh == nil {
-		t.Errorf("get shard failed")
-	}
-	sh2 := eng.GetShard("db0", uint32(0), uint64(10))
-	if sh2 != nil {
-		t.Errorf("get shard failed")
-	}
+	sh, err := eng.GetShard("db0", uint32(0), uint64(1))
+	assert2.NoError(t, err)
+	assert2.NotEmpty(t, sh)
+
+	sh2, err := eng.GetShard("db0", uint32(0), uint64(10))
+	assert2.NoError(t, err)
+	assert2.Nil(t, sh2)
 }
 
 func TestEngine_Statistics_Shard(t *testing.T) {
@@ -4061,7 +4068,7 @@ func GenAggDataRecord(msNames []string, seriesNum, pointNumOfPerSeries int, inte
 			j++
 		}
 
-		sort.Sort(r.Fields)
+		sort.Sort(&r.Fields)
 
 		vInt++
 		vFloat += 1
@@ -4659,6 +4666,11 @@ func NewMockColumnStoreMstInfo() *meta2.MeasurementInfo {
 type MockMetaClient struct {
 }
 
+func (client *MockMetaClient) ThermalShards(db string, start, end time.Duration) map[uint64]struct{} {
+	//TODO implement me
+	panic("implement me")
+}
+
 func (client *MockMetaClient) GetStreamInfosStore() map[string]*meta2.StreamInfo {
 	//TODO implement me
 	panic("implement me")
@@ -4682,6 +4694,10 @@ func (client *MockMetaClient) UpdateShardDownSampleInfo(Ident *meta2.ShardIdenti
 
 func mockMetaClient() *MockMetaClient {
 	return &MockMetaClient{}
+}
+
+func (client *MockMetaClient) GetNodePtsMap(database string) (map[uint64][]uint32, error) {
+	panic("implement me")
 }
 
 func (client *MockMetaClient) CreateMeasurement(database string, retentionPolicy string, mst string, shardKey *meta2.ShardKeyInfo, indexR *meta2.IndexRelation, engineType config.EngineType, colStoreInfo *meta2.ColStoreInfo, _ []*proto2.FieldSchema) (*meta2.MeasurementInfo, error) {
