@@ -78,6 +78,8 @@ type PWMetaClient interface {
 	GetAliveShards(database string, sgi *meta2.ShardGroupInfo) []int
 	GetStreamInfos() map[string]*meta2.StreamInfo
 	GetDstStreamInfos(db, rp string, dstSis *[]*meta2.StreamInfo) bool
+	DBRepGroups(database string) []meta2.ReplicaGroup
+	GetReplicaN(database string) (int, error)
 }
 
 // PointsWriter handles writes across multiple local and remote data nodes.
