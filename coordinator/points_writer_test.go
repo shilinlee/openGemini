@@ -423,7 +423,7 @@ func TestPointsWriter_updateSchemaIfNeeded(t *testing.T) {
 		`field type conflict: input field "value2" on measurement "mst" is type float, already exists as type string`,
 		"field type conflict",
 		"",
-		"tag key can't be 'time'",
+		"tag key can't be time, measurement is 'mst'",
 	}
 
 	var callback = func(db string, rows []influx.Row, err error) {
@@ -451,7 +451,7 @@ func TestPointsWriter_updateSchemaIfNeeded(t *testing.T) {
 	buf.WriteByte('\n')
 	buf.WriteString(`mst,tk1=value11,tk2=value22,tk3=value33 value4=99`)
 	buf.WriteByte('\n')
-	buf.WriteString(`far,boo=1,time=2 f1=1,f2=2`)
+	buf.WriteString(`mst,boo=1,time=2 f1=1,f2=2`)
 	unmarshal(buf.Bytes(), callback)
 }
 

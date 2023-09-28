@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb/models"
-	"github.com/stretchr/testify/assert"
 )
 
 // Global server used by benchmarks
@@ -669,8 +668,16 @@ func TestServer_Write_TagKeyConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := s.Write("db0", "rp0", fmt.Sprintf("mst,tag=1,time=12 f1=2 %d", mustParseTime(time.RFC3339Nano, "2015-01-01T00:00:01Z").UnixNano()), nil)
-	assert.EqualError(t, err, "invalid status code: code=500, body={\"error\":\"tag key can't be 'time'\"}\n")
+	s.Write("db0", "rp0", fmt.Sprintf("mst,tag=1,time=12 f1=2 %d", mustParseTime(time.RFC3339Nano, "2015-01-01T00:00:01Z").UnixNano()), nil)
+
+	http.Post(s.URL()+"/debug/ctrl?mod=flush", "", nil)
+
+	// Verify the data was written.
+	if res, err := s.Query(`SELECT * FROM db0.rp0.mst`); err != nil {
+		t.Fatal(err)
+	} else if exp := `{"results":[{"statement_id":0,"series":[{"name":"mst","columns":["time","f1","tag"],"values":[["2015-01-01T00:00:01Z",2,"1"]]}]}]}`; exp != res {
+		t.Fatalf("unexpected results\nexp: %s\ngot: %s\n", exp, res)
+	}
 }
 
 // Ensure the server will write all points possible with exception to the field type conflict.

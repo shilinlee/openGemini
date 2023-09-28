@@ -204,7 +204,7 @@ var messageMap = map[Errno]*Message{
 	HashAggTransformRunningErr:     newWarnMessage("HashAggTransform work error", ModuleQueryEngine),
 
 	// meta error codes
-	InvalidTagKey:           newWarnMessage(`tag key can't be '%s'`, ModuleMeta),
+	InvalidTagKey:           newWarnMessage(`tag key can't be time, measurement is '%s'`, ModuleMeta),
 	ConflictWithRep:         newWarnMessage("current feature conflicts with replication", ModuleMeta),
 	ReplicaNumberNotEqual:   newWarnMessage("replication number of retention policy is not equal to database", ModuleMeta),
 	ReplicaNumberNotSupport: newWarnMessage("replication number large than 2 is not support", ModuleMeta),

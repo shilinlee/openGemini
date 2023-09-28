@@ -171,6 +171,34 @@ func dropFieldByIndex(r *influx.Row, dropFieldIndex []int) {
 	r.Fields = remainField
 }
 
+func dropTagByIndex(r *influx.Row, dropTagIndex []int) {
+	totalTags := len(r.Tags)
+	dropTags := len(dropTagIndex)
+	if totalTags == dropTags {
+		r.Tags = r.Tags[:0]
+		return
+	}
+
+	remainTags := make([]influx.Tag, totalTags-dropTags)
+	remainIdx, dropIdx, totalIdx := 0, 0, 0
+	for totalIdx = 0; totalIdx < totalTags && dropIdx < dropTags; totalIdx++ {
+		if totalIdx < dropTagIndex[dropIdx] {
+			remainTags[remainIdx] = r.Tags[totalIdx]
+			remainIdx++
+		} else {
+			dropIdx++
+		}
+	}
+
+	for totalIdx < totalTags {
+		remainTags[remainIdx] = r.Tags[totalIdx]
+		remainIdx++
+		totalIdx++
+	}
+
+	r.Tags = remainTags
+}
+
 // fixFields checks and fixes fields: ignore specified time fields
 func fixFields(fields influx.Fields) (influx.Fields, error) {
 	for i := 0; i < len(fields); i++ {
@@ -282,7 +310,7 @@ func (w *PointsWriter) writePointRows(database, retentionPolicy string, rows []i
 		}
 		return err
 	}
-	if dropped > 0 {
+	if partialErr != nil {
 		return netstorage.PartialWriteError{Reason: partialErr, Dropped: dropped}
 	}
 	return partialErr
@@ -324,7 +352,8 @@ func (w *PointsWriter) writeShardMap(database, retentionPolicy string, ctx *inje
 func (w *PointsWriter) isPartialErr(err error) bool {
 	return strings.Contains(err.Error(), "field type conflict") ||
 		strings.Contains(err.Error(), "duplicate tag") ||
-		errno.Equal(err, errno.TooManyTagKeys)
+		errno.Equal(err, errno.TooManyTagKeys) ||
+		errno.Equal(err, errno.InvalidTagKey)
 }
 
 // routeAndMapOriginRows preprocess rows, verify rows and map to shards,
