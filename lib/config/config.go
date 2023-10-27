@@ -29,6 +29,10 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// Use byte 0 to replace spaces as the separator of stream group values.
+const StreamGroupValueSeparator byte = 0
+const StreamGroupValueStrSeparator string = "\x00"
+
 type Validator interface {
 	Validate() error
 }
@@ -39,6 +43,7 @@ type Config interface {
 	GetLogging() *Logger
 	GetSpdy() *Spdy
 	GetCommon() *Common
+	ShowConfigs() map[string]interface{}
 }
 
 type App string
@@ -139,6 +144,25 @@ func (c Common) Validate() error {
 
 func (c *Common) GetLogging() *Logger {
 	return nil
+}
+
+func (c *Common) ShowConfigs() map[string]interface{} {
+	return map[string]interface{}{
+		"common.meta-join":                  c.MetaJoin,
+		"common.ignore-empty-tag":           c.IgnoreEmptyTag,
+		"common.report-enable":              c.ReportEnable,
+		"common.crypto-config":              c.CryptoConfig,
+		"common.cluster-id":                 c.ClusterID,
+		"common.cpu-num":                    c.CPUNum,
+		"common.read-stop":                  c.ReaderStop,
+		"common.write-stop":                 c.WriterStop,
+		"common.memory-size":                c.MemorySize,
+		"common.executor-memory-size-limit": c.MemoryLimitSize,
+		"common.executor-memory-wait-time":  c.MemoryWaitTime,
+		"common.select-hash-algorithm":      c.OptHashAlgo,
+		"common.cpu-allocation-ratio":       c.CpuAllocationRatio,
+		"common.ha-policy":                  c.HaPolicy,
+	}
 }
 
 func CombineDomain(domain, addr string) string {

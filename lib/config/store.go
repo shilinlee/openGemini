@@ -172,6 +172,10 @@ func (c *TSStore) GetCommon() *Common {
 	return c.Common
 }
 
+func (c *TSStore) ShowConfigs() map[string]interface{} {
+	return nil
+}
+
 /*
 	these are limiter specs for difference flavors, unit is MB
 	0: CompactThroughput
@@ -223,6 +227,7 @@ type Store struct {
 	MaxWriteHangTime      toml.Duration `toml:"max-write-hang-time"`
 	MemDataReadEnabled    bool          `toml:"mem-data-read-enabled"`
 	SnapshotTblNum        int           `toml:"snapshot-table-number"`
+	FragmentsNumPerFlush  int           `toml:"fragments-num-per-flush"`
 
 	WalSyncInterval   toml.Duration `toml:"wal-sync-interval"`
 	WalEnabled        bool          `toml:"wal-enabled"`

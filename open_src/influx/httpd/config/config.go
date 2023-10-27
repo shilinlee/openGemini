@@ -85,6 +85,7 @@ type Config struct {
 	ChunkReaderParallel     int            `toml:"chunk-reader-parallel"`
 	ReadBlockSize           toml.Size      `toml:"read-block-size"`
 	TimeFilterProtection    bool           `toml:"time-filter-protection"`
+	CPUThreshold            int            `toml:"cpu-threshold"`
 }
 
 // NewHttpConfig returns a new Config with default settings.
@@ -149,6 +150,56 @@ func (c Config) Validate() error {
 		return errors.New("http max-body-size can not be negative")
 	}
 	return nil
+}
+
+func (c *Config) ShowConfigs() map[string]interface{} {
+	return map[string]interface{}{
+		"http.bind-address":                    c.BindAddress,
+		"http.flight-address":                  c.FlightAddress,
+		"http.flight-enabled":                  c.FlightEnabled,
+		"http.flight-auth-enabled":             c.FlightAuthEnabled,
+		"http.flight-ch-factor":                c.FlightChFactor,
+		"http.domain":                          c.Domain,
+		"http.auth-enabled":                    c.AuthEnabled,
+		"http.weakpwd-path":                    c.WeakPwdPath,
+		"http.log-enabled":                     c.LogEnabled,
+		"http.suppress-write-log":              c.SuppressWriteLog,
+		"http.write-tracing":                   c.WriteTracing,
+		"http.flux-enabled":                    c.FluxEnabled,
+		"http.flux-log-enabled":                c.FluxLogEnabled,
+		"http.pprof-enabled":                   c.PprofEnabled,
+		"http.debug-pprof-enabled":             c.DebugPprofEnabled,
+		"http.https-enabled":                   c.HTTPSEnabled,
+		"http.https-certificate":               c.HTTPSCertificate,
+		"http.https-private-key":               c.HTTPSPrivateKey,
+		"http.max-row-limit":                   c.MaxRowLimit,
+		"http.max-connection-limit":            c.MaxConnectionLimit,
+		"http.shared-secret":                   c.SharedSecret,
+		"http.realm":                           c.Realm,
+		"http.unix-socket-enabled":             c.UnixSocketEnabled,
+		"http.unix-socket-group":               c.UnixSocketGroup,
+		"http.unix-socket-permissions":         c.UnixSocketPermissions,
+		"http.bind-socket":                     c.BindSocket,
+		"http.max-body-size":                   c.MaxBodySize,
+		"http.access-log-path":                 c.AccessLogPath,
+		"http.access-log-status-filters":       c.AccessLogStatusFilters,
+		"http.max-concurrent-write-limit":      c.MaxConcurrentWriteLimit,
+		"http.max-enqueued-write-limit":        c.MaxEnqueuedWriteLimit,
+		"http.enqueued-write-timeout":          c.EnqueuedWriteTimeout,
+		"http.max-concurrent-query-limit":      c.MaxConcurrentQueryLimit,
+		"http.max-enqueued-query-limit":        c.MaxEnqueuedQueryLimit,
+		"http.query-request-rate-limit":        c.QueryRequestRateLimit,
+		"http.write-request-rate-limit":        c.WriteRequestRateLimit,
+		"http.enqueued-query-timeout":          c.EnqueuedQueryTimeout,
+		"http.white_list":                      c.WhiteList,
+		"http.slow-query-time":                 c.SlowQueryTime,
+		"http.parallel-query-in-batch-enabled": c.ParallelQueryInBatch,
+		"http.query-memory-limit-enabled":      c.QueryMemoryLimitEnabled,
+		"http.chunk-reader-parallel":           c.ChunkReaderParallel,
+		"http.read-block-size":                 c.ReadBlockSize,
+		"http.time-filter-protection":          c.TimeFilterProtection,
+		"http.cpu-threshold":                   c.CPUThreshold,
+	}
 }
 
 // StatusFilter will check if an http status code matches a certain pattern.
