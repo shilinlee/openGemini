@@ -1,9 +1,11 @@
 import { of } from 'rxjs';
-import { FieldType, MutableDataFrame } from '@grafana/data';
+import { DataSourceInstanceSettings, FieldType, MutableDataFrame } from '@grafana/data';
 
-import { openGeminiHttpClient } from '../client/index';
-import { SeriesType } from '../client/types';
-import { Formats } from 'types';
+import { openGeminiHttpClient } from '../../client/index';
+import { SeriesType } from '../../client/types';
+import { Formats, GeminiOptions } from 'types';
+import { GeminiDataSource } from 'datasource';
+import { getTemplateSrv } from '@grafana/runtime';
 
 const fetchMock = jest.fn().mockReturnValue(of(createDefaultResponse()));
 
@@ -17,7 +19,15 @@ jest.mock('@grafana/runtime', () => ({
 
 describe('client', () => {
 	const baseUrl = 'http://localhost:8086';
-	const client = new openGeminiHttpClient(baseUrl, { database: 'NOAA_water_database', httpMethod: 'post' });
+	const instanceSettings = {
+		url: '',
+		jsonData: { database: 'NOAA_water_database' },
+	} as unknown as DataSourceInstanceSettings<GeminiOptions>;
+	const client = new openGeminiHttpClient(
+		baseUrl,
+		{ database: 'NOAA_water_database', httpMethod: 'post' },
+		new GeminiDataSource(instanceSettings, getTemplateSrv()),
+	);
 
 	describe('querySql', () => {
 		let response1: any, response2: any;
@@ -53,10 +63,10 @@ describe('client', () => {
 					]),
 				),
 			);
-			response = await client.showMeasurements();
+			response = await client.showMeasurements('');
 		});
 		it('should receive a flat array', () => {
-			expect(response).toEqual(['h2o_feet', 'h2o_pH']);
+			expect(response).toEqual([['h2o_feet'], ['h2o_pH']]);
 		});
 	});
 
@@ -130,6 +140,48 @@ describe('client', () => {
 			await client.getColumnConfig('measurement', 'autogen');
 			expect(fetchMock.mock.calls[0][0].params.q).toEqual('SHOW TAG KEYS FROM autogen.measurement');
 			expect(fetchMock.mock.calls[1][0].params.q).toEqual('SHOW FIELD KEYS FROM autogen.measurement');
+		});
+	});
+
+	describe('test meta query', () => {
+		describe('show tag keys', () => {
+			it('getTagKeys', async () => {
+				jest.clearAllMocks();
+				fetchMock.mockImplementationOnce(() =>
+					of(
+						createDefaultResponse([
+							{
+								name: 'h2o_feet',
+								columns: ['fieldKey', 'fieldType'],
+								values: [
+									['level description', 'string'],
+									['water_level', 'float'],
+								],
+							},
+							{ name: 'h2o_pH', columns: ['fieldKey', 'fieldType'], values: [['pH', 'float']] },
+						]),
+					),
+				);
+				const res = await client.getFieldKeys('h2o_pH', 'autogen', 'NOAA_water_database');
+				expect(fetchMock.mock.calls[0][0].params.q).toEqual('SHOW FIELD KEYS on NOAA_water_database FROM "autogen"."h2o_pH"');
+				expect(res).toEqual(['level description', 'water_level', 'pH']);
+			});
+		});
+		describe('show field keys', () => {
+			it('getFieldKeys', async () => {
+				jest.clearAllMocks();
+				fetchMock.mockImplementationOnce(() =>
+					of(
+						createDefaultResponse([
+							{ name: 'h2o_feet', columns: ['tagKey'], values: [['location']] },
+							{ name: 'h2o_pH', columns: ['tagKey'], values: [['location']] },
+						]),
+					),
+				);
+				const res = await client.getTagKeys('h2o_pH', 'autogen', 'NOAA_water_database');
+				expect(fetchMock.mock.calls[0][0].params.q).toEqual('SHOW TAG KEYS on NOAA_water_database FROM "autogen"."h2o_pH"');
+				expect(res).toEqual(['location']);
+			});
 		});
 	});
 
@@ -213,6 +265,42 @@ describe('client', () => {
 				}).fields,
 			);
 			expect(response[0].meta).toEqual({ preferredVisualisationType: Formats.Logs });
+		});
+		it('test series with tags', async () => {
+			fetchMock.mockImplementation(() =>
+				of(
+					createDefaultResponse([
+						{
+							name: 'h2o_pH',
+							columns: ['time', 'pH'],
+							tags: { location: 'coyote_creek' },
+							values: [
+								[1566000000000, 7],
+								[1566000000001, 6],
+							],
+						},
+					]),
+				),
+			);
+			const response = await client.queryData('SELECT * FROM h2o_pH', { refId: 'A', resultFormat: Formats.Table });
+			const response2 = await client.queryData('SELECT * FROM h2o_pH', { refId: 'A', alias: 'alias' });
+			expect(response[0].fields).toEqual(
+				new MutableDataFrame({
+					fields: [
+						{ name: 'Time', type: FieldType.time, values: [1566000000000, 1566000000001] },
+						{ name: 'location', type: FieldType.string, values: ['coyote_creek', 'coyote_creek'] },
+						{ name: 'pH', type: FieldType.number, values: [7, 6] },
+					],
+				}).fields,
+			);
+			expect(response2[0].fields).toEqual(
+				new MutableDataFrame({
+					fields: [
+						{ name: 'Time', type: FieldType.time, values: [1566000000000, 1566000000001] },
+						{ name: 'alias', type: FieldType.number, values: [7, 6] },
+					],
+				}).fields,
+			);
 		});
 	});
 });
