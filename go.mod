@@ -20,6 +20,7 @@ require (
 	github.com/hashicorp/memberlist v0.3.1
 	github.com/hashicorp/raft v1.3.1
 	github.com/hashicorp/serf v0.9.6
+	github.com/huaweicloud/huaweicloud-sdk-go-obs v3.23.3+incompatible
 	github.com/influxdata/influxdb v1.9.5
 	github.com/influxdata/influxql v1.1.1-0.20210223160523-b6ab99450c93
 	github.com/influxdata/tdigest v0.0.2-0.20210216194612-fc98d27c9e8b
@@ -36,7 +37,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.22.1
 	github.com/smartystreets/goconvey v1.7.2
 	github.com/spf13/cobra v1.3.0
-	github.com/stretchr/testify v1.8.0
+	github.com/stretchr/testify v1.8.4
 	github.com/tinylib/msgp v1.1.7-0.20220719154719-f3635b96e483
 	github.com/valyala/fastjson v1.6.4
 	github.com/xlab/treeprint v1.1.0
