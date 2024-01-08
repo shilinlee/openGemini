@@ -28,7 +28,7 @@ import (
 )
 
 func updateStmt(QLlex interface{}, stmt Statement) {
-	//// QLlex.(*QLLexerImpl).UpdateStmt(stmt)
+	QLlex.(*QLLexerImpl).UpdateStmt(stmt)
 }
 
 //line parser.y:32

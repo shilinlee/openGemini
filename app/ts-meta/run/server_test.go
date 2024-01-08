@@ -102,6 +102,9 @@ func Test_NewServer_Statistics(t *testing.T) {
 	server.initStatisticsPusher()
 	puser := &statisticsPusher.StatisticsPusher{}
 	server.MetaService.SetStatisticsPusher(puser)
+
+	config.SetProductType("logkeeper")
+	server.initStatisticsPusher()
 }
 
 func Test_NewServer_Statistics_Single(t *testing.T) {
@@ -147,7 +150,7 @@ func TestNewServer1(t *testing.T) {
 }
 
 func TestNewCommand(t *testing.T) {
-	cmd := NewCommand(app.ServerInfo{App: config.AppMeta}, true)
+	cmd := NewCommand(app.ServerInfo{App: config.AppMeta}, false)
 	require.Equal(t, app.METALOGO, cmd.Logo)
 	require.Equal(t, config.AppMeta, cmd.Info.App)
 }

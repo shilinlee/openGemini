@@ -58,11 +58,17 @@ const (
 	// DefaultRetentionPolicyDuration is the default value of RetentionPolicyInfo.Duration.
 	DefaultRetentionPolicyDuration = time.Duration(0)
 
+	// DefaultRetentionPolicyWarmDuration is the default value of RetentionPolicyInfo.WarmDuration.
+	DefaultRetentionPolicyWarmDuration = time.Duration(0)
+
 	// DefaultRetentionPolicyName is the default name for auto generated retention policies.
 	DefaultRetentionPolicyName = "autogen"
 
 	// MinRetentionPolicyDuration represents the minimum duration for a policy.
 	MinRetentionPolicyDuration = time.Hour
+
+	// MinRetentionPolicyWarmDuration represents the minimum warm duration for a policy.
+	MinRetentionPolicyWarmDuration = time.Hour
 
 	// QueryIDSpan is the default id range span.
 	QueryIDSpan = 100000000 // 100 million
@@ -72,6 +78,8 @@ const (
 	HASH          = "hash"
 	RANGE         = "range"
 	seperatorChar = "$"
+	DATANODE      = "data"
+	METANODE      = "meta"
 )
 
 var dropStreamFirstError = errors.New("stream task exists, drop it first")
@@ -178,6 +186,18 @@ func (data *Data) WalkDatabasesOrderly(fn func(db *DatabaseInfo)) {
 	}
 }
 
+func (data *Data) WalkDataNodes(fn func(node *DataNode)) {
+	for i := range data.DataNodes {
+		fn(&data.DataNodes[i])
+	}
+}
+
+func (data *Data) WalkMetaNodes(fn func(node *NodeInfo)) {
+	for i := range data.MetaNodes {
+		fn(&data.MetaNodes[i])
+	}
+}
+
 func (data *Data) DurationInfos(dbPtIds map[string][]uint32) *ShardDurationResponse {
 	r := &ShardDurationResponse{DataIndex: data.Index}
 	data.WalkDatabases(func(db *DatabaseInfo) {
@@ -240,7 +260,11 @@ func (data *Data) NewestShardGroup(database, retentionPolicy string) (sg *ShardG
 }
 
 func (data *Data) Measurement(database, retentionPolicy, mst string) (*MeasurementInfo, error) {
-	rp, err := data.RetentionPolicy(database, retentionPolicy)
+	db, err := data.GetDatabase(database)
+	if err != nil {
+		return nil, err
+	}
+	rp, err := db.GetRetentionPolicy(retentionPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -253,11 +277,19 @@ func (data *Data) Measurement(database, retentionPolicy, mst string) (*Measureme
 	if msti.MarkDeleted {
 		return nil, ErrMeasurementNotFound
 	}
+	if msti.ObsOptions == nil && db.Options != nil {
+		msti.ObsOptions = db.Options
+	}
+
 	return msti, nil
 }
 
 func (data *Data) Measurements(database, retentionPolicy string) (*MeasurementsInfo, error) {
-	rp, err := data.RetentionPolicy(database, retentionPolicy)
+	db, err := data.GetDatabase(database)
+	if err != nil {
+		return nil, err
+	}
+	rp, err := db.GetRetentionPolicy(retentionPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +297,9 @@ func (data *Data) Measurements(database, retentionPolicy string) (*MeasurementsI
 	m := &MeasurementsInfo{}
 	mstsSlice := make([]*MeasurementInfo, 0, len(rp.Measurements))
 	rp.EachMeasurements(func(mst *MeasurementInfo) {
+		if mst.ObsOptions == nil && db.Options != nil {
+			mst.ObsOptions = db.Options
+		}
 		mstsSlice = append(mstsSlice, mst)
 	})
 
@@ -1046,8 +1081,7 @@ func (data *Data) CreateDatabase(dbName string, rpi *RetentionPolicyInfo, shardK
 	dbi.EnableTagArray = enableTagArray
 	dbi.ReplicaN = int(replicaN)
 	if options != nil {
-		dbi.Options = &ObsOptions{}
-		dbi.Options.Unmarshal(options)
+		dbi.Options = UnmarshalObsOptions(options)
 	}
 	err = data.SetDatabase(dbi)
 	return err
@@ -1367,6 +1401,56 @@ func (data *Data) ShowRetentionPolicies(database string) (models.Rows, error) {
 	sort.Slice(row.Values, func(i, j int) bool {
 		return row.Values[i][0].(string) < row.Values[j][0].(string)
 	})
+	return []*models.Row{row}, nil
+}
+
+func (data *Data) ShowCluster() models.Rows {
+	row := &models.Row{Columns: []string{"time", "status", "hostname", "nodeID", "nodeType"}}
+	timestamp := time.Now().UTC().UnixNano()
+
+	data.WalkMetaNodes(func(node *NodeInfo) {
+		row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, METANODE})
+	})
+	data.WalkDataNodes(func(node *DataNode) {
+		row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, DATANODE})
+	})
+
+	return []*models.Row{row}
+}
+
+func (data *Data) ShowClusterWithCondition(nodeType string, ID uint64) (models.Rows, error) {
+	row := &models.Row{Columns: []string{"time", "status", "hostname", "nodeID", "nodeType"}}
+	timestamp := time.Now().UTC().UnixNano()
+
+	switch nodeType {
+	case METANODE:
+		data.WalkMetaNodes(func(node *NodeInfo) {
+			if ID == 0 || node.ID == ID {
+				row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, METANODE})
+			}
+		})
+	case DATANODE:
+		data.WalkDataNodes(func(node *DataNode) {
+			if ID == 0 || node.ID == ID {
+				row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, DATANODE})
+			}
+		})
+	default:
+		data.WalkMetaNodes(func(node *NodeInfo) {
+			if ID == 0 || node.ID == ID {
+				row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, METANODE})
+			}
+		})
+		data.WalkDataNodes(func(node *DataNode) {
+			if ID == 0 || node.ID == ID {
+				row.Values = append(row.Values, []interface{}{timestamp, node.Status, node.Host, node.ID, DATANODE})
+			}
+		})
+	}
+	if len(row.Values) == 0 {
+		return nil, errno.NewError(errno.InValidNodeID, ID)
+	}
+
 	return []*models.Row{row}, nil
 }
 
@@ -1701,16 +1785,9 @@ func (data *Data) expandDBPtView(database string, ptNum uint32, newNode *DataNod
 	DataLogger.Info("expand db ptview", zap.String("db", database), zap.Uint32("from", oldDBPtNums), zap.Uint32("to", ptNum),
 		zap.Uint32("replicaN", replicaN), zap.Uint32("total node num", dataNodeNum))
 
-	isRemoteStore := data.Database(database).Options != nil
 	for ptId := oldDBPtNums; ptId < ptNum; ptId++ {
-		if isRemoteStore {
-			// set pt status offline, and set it online when assigned successfully
-			data.updatePtStatus(database, ptId, newNode.ID, Offline)
-		} else {
-			pos := ptId % dataNodeNum
-			// set pt status offline, and set it online when assigned successfully
-			data.updatePtStatus(database, ptId, data.DataNodes[pos].ID, Offline)
-		}
+		// set pt status offline, and set it online when assigned successfully
+		data.updatePtStatus(database, ptId, newNode.ID, Offline)
 	}
 
 	if replicaN > 1 && (dataNodeNum%replicaN == 0) {

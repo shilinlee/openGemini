@@ -69,6 +69,7 @@ type StoreEngine interface {
 	GetShardSplitPoints(string, uint32, uint64, []int64) ([]string, error)
 	SeriesCardinality(string, []uint32, []string, influxql.Expr, influxql.TimeRange) ([]meta.MeasurementCardinalityInfo, error)
 	SeriesExactCardinality(string, []uint32, []string, influxql.Expr, influxql.TimeRange) (map[string]uint64, error)
+	TagKeys(string, []uint32, []string, influxql.Expr, influxql.TimeRange) ([]string, error)
 	SeriesKeys(string, []uint32, []string, influxql.Expr, influxql.TimeRange) ([]string, error)
 	TagValues(string, []uint32, map[string][][]byte, influxql.Expr, influxql.TimeRange) (netstorage.TablesTagSets, error)
 	TagValuesCardinality(string, []uint32, map[string][][]byte, influxql.Expr, influxql.TimeRange) (map[string]uint64, error)
@@ -128,12 +129,12 @@ func (s *Storage) appendRetentionPolicyService(c retention2.Config) {
 	s.Services = append(s.Services, srv)
 }
 
-func (s *Storage) appendHierarchicalService(c retention2.Config) {
+func (s *Storage) appendHierarchicalService(c config.HierarchicalConfig) {
 	if !c.Enabled {
 		return
 	}
 
-	srv := hierarchical.NewService(time.Duration(c.CheckInterval))
+	srv := hierarchical.NewService(c)
 	srv.Engine = s.engine
 	srv.MetaClient = s.metaClient
 	s.Services = append(s.Services, srv)
@@ -203,6 +204,7 @@ func OpenStorage(path string, node *metaclient.Node, cli *metaclient.Client, con
 	opt.WalEnabled = conf.Data.WalEnabled
 	opt.WalReplayParallel = conf.Data.WalReplayParallel
 	opt.WalReplayAsync = conf.Data.WalReplayAsync
+	opt.WalReplayBatchSize = int(conf.Data.WalReplayBatchSize)
 	opt.CompactionMethod = conf.Data.CompactionMethod
 	opt.OpenShardLimit = conf.Data.OpenShardLimit
 	opt.LazyLoadShardEnable = conf.Data.LazyLoadShardEnable
@@ -214,6 +216,7 @@ func OpenStorage(path string, node *metaclient.Node, cli *metaclient.Client, con
 	opt.SnapshotTblNum = conf.Data.SnapshotTblNum
 	opt.FragmentsNumPerFlush = conf.Data.FragmentsNumPerFlush
 	opt.CsCompactionEnabled = conf.Data.CsCompactionEnabled
+	opt.CsDetachedFlushEnabled = conf.Data.CsDetachedFlushEnabled
 
 	// init clv config
 	clv.InitConfig(conf.ClvConfig)
@@ -475,6 +478,10 @@ func (s *Storage) ScanWithSparseIndex(ctx context.Context, db string, ptId uint3
 	return filesFragments, err
 }
 
+func (s *Storage) GetIndexInfo(db string, ptId uint32, shardID uint64, schema hybridqp.Catalog) (interface{}, error) {
+	return s.engine.GetIndexInfo(db, ptId, shardID, schema.(*executor.QuerySchema))
+}
+
 func (s *Storage) RowCount(db string, ptId uint32, shardIDS []uint64, schema hybridqp.Catalog) (int64, error) {
 	rowCount, err := s.engine.RowCount(db, ptId, shardIDS, schema.(*executor.QuerySchema))
 	return rowCount, err
@@ -487,6 +494,12 @@ func (s *Storage) TagValues(db string, ptIDs []uint32, tagKeys map[string][][]by
 
 func (s *Storage) TagValuesCardinality(db string, ptIDs []uint32, tagKeys map[string][][]byte, condition influxql.Expr, tr influxql.TimeRange) (map[string]uint64, error) {
 	return s.engine.TagValuesCardinality(db, ptIDs, tagKeys, condition, tr)
+}
+
+func (s *Storage) TagKeys(db string, ptIDs []uint32, measurements []string, condition influxql.Expr, tr influxql.TimeRange) ([]string, error) {
+	ms := stringSlice2BytesSlice(measurements)
+
+	return s.engine.TagKeys(db, ptIDs, ms, condition, tr)
 }
 
 func (s *Storage) SeriesKeys(db string, ptIDs []uint32, measurements []string, condition influxql.Expr, tr influxql.TimeRange) ([]string, error) {

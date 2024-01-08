@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,7 +149,9 @@ func NewEngine(dataPath, walPath string, options netstorage.EngineOptions, ctx *
 	immutable.SetMergeFlag4TsStore(int32(options.CompactionMethod))
 	immutable.SetSnapshotTblNum(options.SnapshotTblNum)
 	immutable.SetCompactionEnabled(options.CsCompactionEnabled)
+	immutable.SetDetachedFlushEnabled(options.CsDetachedFlushEnabled)
 	immutable.SetFragmentsNumPerFlush(options.FragmentsNumPerFlush)
+	immutable.SetPrefixDataPath(dataPath)
 	immutable.Init()
 
 	return eng, nil
@@ -730,7 +734,7 @@ func (e *Engine) CreateShard(db, rp string, ptId uint32, shardID uint64, timeRan
 		if err != nil {
 			return err
 		}
-		sh.SetMstInfo(mstInfo.Name, mstInfo)
+		sh.SetMstInfo(mstInfo)
 		dbPTInfo.shards[shardID] = sh
 		newestShardID, ok := dbPTInfo.newestRpShard[rp]
 		if !ok || newestShardID < shardID {
@@ -913,13 +917,17 @@ func (e *Engine) deleteIndexes(db string, pt uint32, rp string, fn func(dbPTInfo
 	indexes := make(map[uint64]struct{})
 
 	dbPTInfo := e.getDBPTInfo(db, pt)
+	shardIDs := dbPTInfo.ShardIds()
+
 	var n int
-	for shardId := range dbPTInfo.shards {
-		if dbPTInfo.shards[shardId].GetRPName() != rp {
+	for _, shardId := range shardIDs {
+		sh := dbPTInfo.Shard(shardId)
+		if sh.GetRPName() != rp {
 			continue
 		}
-		indexID := dbPTInfo.shards[shardId].GetIndexBuilder().GetIndexID()
-		if _, ok := dbPTInfo.indexBuilder[indexID]; ok {
+
+		indexID := sh.GetIndexBuilder().GetIndexID()
+		if _, ok := dbPTInfo.getIndexBuilder(indexID); ok {
 			indexes[indexID] = struct{}{}
 		}
 		n++
@@ -931,7 +939,7 @@ func (e *Engine) deleteIndexes(db string, pt uint32, rp string, fn func(dbPTInfo
 				return
 			}
 			resC <- err
-		}(dbPTInfo, shardId, dbPTInfo.shards[shardId])
+		}(dbPTInfo, shardId, sh)
 	}
 
 	var err error
@@ -976,7 +984,7 @@ func (e *Engine) deleteOneIndex(dbPTInfo *DBPTInfo, indexId uint64) error {
 }
 
 func (e *Engine) SeriesExactCardinality(db string, ptIDs []uint32, measurements [][]byte, condition influxql.Expr, tr influxql.TimeRange) (map[string]uint64, error) {
-	keysMap, err := e.searchSeries(db, ptIDs, measurements, condition, tr)
+	keysMap, err := e.searchIndex(db, ptIDs, measurements, condition, tr, e.handleSeries)
 	if err != nil {
 		return nil, err
 	}
@@ -990,7 +998,7 @@ func (e *Engine) SeriesExactCardinality(db string, ptIDs []uint32, measurements 
 	return result, nil
 }
 
-func (e *Engine) searchSeries(db string, ptIDs []uint32, measurements [][]byte, condition influxql.Expr, tr influxql.TimeRange) (map[string]map[string]struct{}, error) {
+func (e *Engine) searchIndex(db string, ptIDs []uint32, measurements [][]byte, condition influxql.Expr, tr influxql.TimeRange, fn func(key []byte, keysMap map[string]map[string]struct{}, mstName string)) (map[string]map[string]struct{}, error) {
 	e.mu.RLock()
 	var err error
 	if ptIDs, err = e.checkAndAddRefPTSNoLock(db, ptIDs); err != nil {
@@ -1032,7 +1040,10 @@ func (e *Engine) searchSeries(db string, ptIDs []uint32, measurements [][]byte, 
 			for _, nameWithVer := range measurements {
 				mstName := influx.GetOriginMstName(util.Bytes2str(nameWithVer))
 				stime := time.Now()
-				idx := iBuild.GetPrimaryIndex().(*tsi.MergeSetIndex)
+				idx, ok := iBuild.GetPrimaryIndex().(*tsi.MergeSetIndex)
+				if !ok {
+					return nil, errors.New("idx nil,some thing wrong with GetPrimaryIndex")
+				}
 				series, err = idx.SearchSeriesKeys(series[:0], nameWithVer, condition)
 				if len(series) > seriesLen {
 					seriesLen = len(series)
@@ -1046,7 +1057,7 @@ func (e *Engine) searchSeries(db string, ptIDs []uint32, measurements [][]byte, 
 				stime = time.Now()
 				for _, key := range series {
 					key = bytes.Replace(key, nameWithVer, []byte(mstName), 1)
-					keysMap[mstName][string(key)] = struct{}{}
+					fn(key, keysMap, mstName)
 				}
 				log.Info("remove dupicate key", zap.String("nameWithVer", string(nameWithVer)),
 					zap.Duration("cost", time.Since(stime)))
@@ -1055,6 +1066,19 @@ func (e *Engine) searchSeries(db string, ptIDs []uint32, measurements [][]byte, 
 		pt.mu.RUnlock()
 	}
 	return keysMap, nil
+}
+
+func (e *Engine) handleSeries(key []byte, keysMap map[string]map[string]struct{}, mstName string) {
+	keysMap[mstName][string(key)] = struct{}{}
+}
+
+func (e *Engine) handleTagKeys(key []byte, keysMap map[string]map[string]struct{}, mstName string) {
+	arr := strings.Split(string(key), ",")
+
+	for _, item := range arr[1:] {
+		kv := strings.Split(item, "=")
+		keysMap[mstName][kv[0]] = struct{}{}
+	}
 }
 
 func (e *Engine) DbPTRef(db string, ptId uint32) error {
@@ -1145,6 +1169,18 @@ func (e *Engine) ScanWithSparseIndex(ctx context.Context, db string, ptId uint32
 		shardFrags[shardId] = fileFrags
 	}
 	return shardFrags, nil
+}
+
+func (e *Engine) GetIndexInfo(db string, ptId uint32, shardID uint64, schema *executor.QuerySchema) (*executor.AttachedIndexInfo, error) {
+	s, err := e.GetShard(db, ptId, shardID)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		e.log.Warn(fmt.Sprintf("GetIndexInfo shard is null. db: %s, ptId: %d, shardId: %d", db, ptId, shardID))
+		return executor.NewAttachedIndexInfo(nil, nil), nil
+	}
+	return s.GetIndexInfo(schema)
 }
 
 func (e *Engine) RowCount(db string, ptId uint32, shardIDs []uint64, schema *executor.QuerySchema) (int64, error) {
@@ -1283,4 +1319,31 @@ func (e *Engine) Statistics(buffer []byte) ([]byte, error) {
 		}
 	}
 	return buffer, nil
+}
+
+func (s *Engine) InitLogStoreCtx(querySchema *executor.QuerySchema) (*idKeyCursorContext, error) {
+	ctx := &idKeyCursorContext{
+		decs:         immutable.NewReadContext(querySchema.Options().IsAscending()),
+		maxRowCnt:    querySchema.Options().ChunkSizeNum(),
+		aggPool:      AggPool,
+		seriesPool:   SeriesPool,
+		tmsMergePool: TsmMergePool,
+		querySchema:  querySchema,
+	}
+	err := newCursorSchema(ctx, querySchema)
+	if err != nil {
+		return nil, err
+	}
+
+	if ctx.schema.Len() <= 1 {
+		return nil, errno.NewError(errno.NoFieldSelected, "initCtx")
+	}
+	ctx.tr.Min = querySchema.Options().GetStartTime()
+	ctx.tr.Max = querySchema.Options().GetEndTime()
+	ctx.decs.SetTr(ctx.tr)
+	return ctx, nil
+}
+
+func (e *Engine) HierarchicalStorage(shardId uint64, ptID uint32, dbName string, resCh chan int64) bool {
+	return true
 }

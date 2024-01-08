@@ -174,6 +174,14 @@ func init() {
 		`SET CONFIG meta logging.level = info`,
 		`SET CONFIG store "data.compact-recovery" = false`,
 		`SET CONFIG store "data.compact-recovery" = true`,
+
+		// show cluster
+		"SHOW CLUSTER",
+		"SHOW CLUSTER WHERE nodeID = 2",
+		"SHOW CLUSTER WHERE nodeID = 2 AND nodeType = data",
+		"SHOW CLUSTER WHERE nodeType = data",
+		"SHOW CLUSTER WHERE nodeType = data AND nodeID = 2",
+		"SHOW CLUSTER WHERE nodeID = 2 AND nodeType = \"data\"",
 	}
 
 	benchCases = []string{
@@ -326,6 +334,11 @@ func TestSingleParser(t *testing.T) {
 		"create measurement mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore sortkey field1",
 		"create measurement mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = ColumnStore",
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = ColumnStore",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1d)",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1w)",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(7d)",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1s)",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1m)",
 		"show sortkey from mst",
 		"show enginetype from mst",
 		"show primarykey from mst",
@@ -339,6 +352,8 @@ func TestSingleParser(t *testing.T) {
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = tsstore indextype text indexlist tag11",
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype bloomfilter indexlist tag1 compact block",
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype bloomfilter indexlist tag1 compact row",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1m) minmax indexlist field1",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1m) bloomfilter indexlist field1 minmax INDEXLIST field1",
 	}
 	for _, c := range c {
 		YyParser.Scanner = influxql.NewScanner(strings.NewReader(c))
@@ -377,6 +392,10 @@ func TestSingleParserError(t *testing.T) {
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype bloomfilter indexlist tag11",
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype field indexlist tag11",
 		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype bloomfilter indexlist tag1 compact row0",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1y)",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1y) field1",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1m) minmax1 indexlist field1",
+		"create measurement db0.rp0.mst0 (tag1 tag, field1 int64 field) with ENGINETYPE = columnstore indextype timecluster(1m) minmax indexlist field111",
 	}
 
 	cr := []string{
@@ -401,6 +420,10 @@ func TestSingleParserError(t *testing.T) {
 		"Invalid indexlist",
 		"Invalid indexlist",
 		"expect ROW or BLOCK for COMPACT type",
+		"invalid duration",
+		"syntax error: unexpected $end, expecting INDEXLIST",
+		"Invalid index type for COLUMNSTORE",
+		"Invalid indexlist",
 	}
 	for i, c := range c {
 		YyParser.Scanner = influxql.NewScanner(strings.NewReader(c))
