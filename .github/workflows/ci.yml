@@ -2,6 +2,7 @@ name: Continuous Integration
 
 on:
   workflow_dispatch:
+  push:
   pull_request:
     types: [ opened, synchronize, reopened, ready_for_review ]
     paths-ignore:
@@ -91,11 +92,38 @@ jobs:
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-
+  BuildCheck:
+    name: build check
+    if: github.event.pull_request.draft == false
+#    needs: [GoLint]
+    strategy:
+      fail-fast: true
+      matrix:
+        os: ["ubuntu-latest"]
+        go: ["1.19.x"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: WillAbides/setup-go-faster@v1.7.0
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Build for windows
+        run: |
+          sudo apt-get update
+          sudo apt-get install mingw-w64 -y
+          python build.py --clean --platform windows --arch amd64
+        env:
+          CC: x86_64-w64-mingw32-gcc
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 1
   IntegrationTest:
     name: integration test
     if: github.event.pull_request.draft == false
-    needs: [GoLint]
+#    needs: [GoLint]
     strategy:
       fail-fast: true
       matrix:
@@ -110,9 +138,11 @@ jobs:
       - uses: WillAbides/setup-go-faster@v1.7.0
         with:
           go-version: ${{ matrix.go }}
+      - name: Setup
+        run: |
+          sudo bash ./scripts/ci/linux_cross_platform.sh
       - name: Run build and serve
         run: |
-          make build-check
           make go-build
           make start-subscriber
           bash scripts/install_cluster.sh
