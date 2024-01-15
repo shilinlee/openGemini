@@ -3,19 +3,50 @@
 #	Shell script to install openGemini as a cluster at one node.
 #
 
-ps -ef | grep -v grep | grep ts-store | grep $USER > /dev/null
-if [ $? == 0 ];then
-  killall -9 -w ts-store
-fi
+if [ "$(uname -s)" == "Darwin" ]; then
+  ps -ef | grep -v grep | grep ts-store | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 ts-store
+  fi
 
-ps -ef | grep -v grep | grep ts-meta | grep $USER > /dev/null
-if [ $? == 0 ];then
-  killall -9 -w ts-meta
-fi
+  ps -ef | grep -v grep | grep ts-meta | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 ts-meta
+  fi
 
-ps -ef | grep -v grep | grep ts-sql | grep $USER > /dev/null
-if [ $? == 0 ];then
-  killall -9 -w ts-sql
+  ps -ef | grep -v grep | grep ts-sql | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 ts-sql
+  fi
+
+  sleep 3
+
+  echo "ref link:"
+  echo "https://superuser.com/questions/458875/how-do-you-get-loopback-addresses-other-than-127-0-0-1-to-work-on-os-x"
+  echo "temporarily open 127.0.0.2/127.0.0.3 for ts-store/ts-meta, please enter your power-on password"
+  sudo ifconfig lo0 alias 127.0.0.2 up
+  sudo ifconfig lo0 alias 127.0.0.3 up
+  echo "\nif sed command occur error, please install gsed by: \nbrew install gnu-sed\nand then:\nexport PATH=\"/opt/homebrew/opt/gnu-sed/libexec/gnubin:\$PATH\""
+
+elif [ "$(uname -s)" == "Linux" ]; then
+  ps -ef | grep -v grep | grep ts-store | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 -w ts-store
+  fi
+
+  ps -ef | grep -v grep | grep ts-meta | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 -w ts-meta
+  fi
+
+  ps -ef | grep -v grep | grep ts-sql | grep $USER > /dev/null
+  if [ $? == 0 ];then
+    killall -9 -w ts-sql
+  fi
+
+else
+  echo "not support the platform": $(uname)
+  exit 1
 fi
 
 declare -a nodes[3]
@@ -24,44 +55,19 @@ do
     nodes[$i]=127.0.0.$i
 done
 
-if [ "$(uname)" == "Darwin" ]; then
-  echo "ref link:"
-  echo "https://superuser.com/questions/458875/how-do-you-get-loopback-addresses-other-than-127-0-0-1-to-work-on-os-x"
-  echo "temporarily open 127.0.0.2/127.0.0.3 for ts-store/ts-meta, please enter admin pwd:"
-  sudo ifconfig lo0 alias 127.0.0.2 up
-  sudo ifconfig lo0 alias 127.0.0.3 up
+# generate config
+for((i = 1; i <= 3; i++))
+do
+    rm -rf config/openGemini-$i.conf
+    cp config/openGemini.conf config/openGemini-$i.conf
 
-  # generate config
-  for((i = 1; i <= 3; i++))
-  do
-      rm -rf config/openGemini-$i.conf
-      cp config/openGemini.conf config/openGemini-$i.conf
+    sed -i "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
+    sed -i "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
+    sed -i "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
+    sed -i "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
 
-      sed -i "" "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
-      sed -i "" "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
-      sed -i "" "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
-      sed -i "" "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
-
-      sed -i "" "s/{{id}}/$i/g" config/openGemini-$i.conf
-  done
-elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
-      # generate config
-      for((i = 1; i <= 3; i++))
-      do
-          rm -rf config/openGemini-$i.conf
-          cp config/openGemini.conf config/openGemini-$i.conf
-
-          sed -i "s/{{meta_addr_1}}/${nodes[1]}/g" config/openGemini-$i.conf
-          sed -i "s/{{meta_addr_2}}/${nodes[2]}/g" config/openGemini-$i.conf
-          sed -i "s/{{meta_addr_3}}/${nodes[3]}/g" config/openGemini-$i.conf
-          sed -i "s/{{addr}}/${nodes[$i]}/g" config/openGemini-$i.conf
-
-          sed -i "s/{{id}}/$i/g" config/openGemini-$i.conf
-      done
-else
-  echo "not support the platform": $(uname)
-  exit 1
-fi
+    sed -i "s/{{id}}/$i/g" config/openGemini-$i.conf
+done
 
 rm -rf /tmp/openGemini/logs
 mkdir -p /tmp/openGemini/logs/1
